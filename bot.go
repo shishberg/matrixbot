@@ -2,8 +2,11 @@ package matrixbot
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
+	"os"
 
 	"github.com/rs/zerolog"
 	"github.com/shishberg/matrixbot/e2ee"
@@ -165,6 +168,14 @@ func (b *Bot) Run(ctx context.Context) error {
 		if err := helper.Init(ctx); err != nil {
 			return fmt.Errorf("initialising crypto helper: %w", err)
 		}
+		// mautrix's cryptohelper opens the SQLite store with the process
+		// umask, leaving crypto.db (plus the WAL/SHM sidecars) world-readable
+		// on a default Mac/Linux setup. The rest of matrixbot writes secrets
+		// at 0600 — clamp these to match. Failures are non-fatal: this is
+		// hardening, and the bot can still run without it.
+		if err := secureCryptoDBFiles(b.cryptoDB); err != nil {
+			slog.Warn("matrixbot: tightening crypto db permissions", "err", err, "store", b.cryptoDB)
+		}
 		b.client.Crypto = helper
 		b.clearPickleKey()
 		slog.Info("matrixbot: crypto enabled", "store", b.cryptoDB)
@@ -267,6 +278,21 @@ func (b *Bot) handleInvite(ctx context.Context, evt *event.Event) {
 		return
 	}
 	slog.Info("matrixbot: joined", "room", evt.RoomID)
+}
+
+// secureCryptoDBFiles clamps the cryptohelper's SQLite files to 0600. The
+// helper opens its store with the process umask, which on a default
+// Mac/Linux setup yields 0644 — too open for end-to-end encryption state.
+// We chmod the main DB plus the WAL/SHM sidecars; missing sidecars are
+// silently skipped (non-WAL mode, or fresh installs that haven't created
+// them yet). Returns the first chmod error so the caller can log it.
+func secureCryptoDBFiles(cryptoDBPath string) error {
+	for _, p := range []string{cryptoDBPath, cryptoDBPath + "-shm", cryptoDBPath + "-wal"} {
+		if err := os.Chmod(p, 0o600); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+	}
+	return nil
 }
 
 // clearPickleKey drops the in-memory copy of the pickle key once it has been

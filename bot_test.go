@@ -5,6 +5,8 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -713,5 +715,65 @@ func TestBotDispatchLogsWhenRoomHasNoRoutes(t *testing.T) {
 
 	if !strings.Contains(buf.String(), "no routes for room") {
 		t.Errorf("expected 'no routes for room' log, got %q", buf.String())
+	}
+}
+
+// TestSecureCryptoDBFilesChmodsAllThree pins the hardening invariant:
+// mautrix's cryptohelper creates crypto.db plus the SQLite WAL/SHM
+// sidecars with the process umask (typically 0644). Matrix E2EE state is a
+// secret like the rest of the data dir, so the helper must clamp all three
+// to 0600 — both for fresh creations and for installs where the previous
+// version left them too open.
+func TestSecureCryptoDBFilesChmodsAllThree(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "crypto.db")
+	paths := []string{dbPath, dbPath + "-shm", dbPath + "-wal"}
+	for _, p := range paths {
+		if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
+			t.Fatalf("seed %s: %v", p, err)
+		}
+	}
+
+	if err := secureCryptoDBFiles(dbPath); err != nil {
+		t.Fatalf("secureCryptoDBFiles: %v", err)
+	}
+
+	for _, p := range paths {
+		info, err := os.Stat(p)
+		if err != nil {
+			t.Fatalf("stat %s: %v", p, err)
+		}
+		if got := info.Mode().Perm(); got != 0o600 {
+			t.Errorf("%s perm = %o, want 0600", p, got)
+		}
+	}
+}
+
+// TestSecureCryptoDBFilesSkipsMissingSidecars pins the partial case: if the
+// WAL/SHM sidecars are absent (e.g. cryptohelper was opened in a non-WAL
+// mode, or in tests that only create the main file), chmod must succeed and
+// fix what's there without erroring on the missing files.
+func TestSecureCryptoDBFilesSkipsMissingSidecars(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "crypto.db")
+	if err := os.WriteFile(dbPath, []byte("x"), 0o644); err != nil {
+		t.Fatalf("seed %s: %v", dbPath, err)
+	}
+
+	if err := secureCryptoDBFiles(dbPath); err != nil {
+		t.Fatalf("secureCryptoDBFiles: %v", err)
+	}
+
+	info, err := os.Stat(dbPath)
+	if err != nil {
+		t.Fatalf("stat %s: %v", dbPath, err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Errorf("%s perm = %o, want 0600", dbPath, got)
+	}
+	for _, suffix := range []string{"-shm", "-wal"} {
+		if _, err := os.Stat(dbPath + suffix); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("expected %s to remain absent, got err=%v", dbPath+suffix, err)
+		}
 	}
 }
