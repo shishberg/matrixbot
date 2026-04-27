@@ -115,9 +115,9 @@ func memberEventFrom(roomID id.RoomID, stateKey string, membership event.Members
 func TestNewBotStoresCryptoConfig(t *testing.T) {
 	cfg := BotConfig{
 		Homeserver:  "https://matrix.example",
-		UserID:      "@bot:example",
+		UserID:      id.UserID("@bot:example"),
 		AccessToken: "tok",
-		DeviceID:    "DEV",
+		DeviceID:    id.DeviceID("DEV"),
 		PickleKey:   "pickle-secret",
 		CryptoDB:    "/tmp/matrixbot-crypto-test.db",
 	}
@@ -136,13 +136,13 @@ func TestNewBotStoresCryptoConfig(t *testing.T) {
 func TestNewBotStoresCrossSigningConfig(t *testing.T) {
 	cfg := BotConfig{
 		Homeserver:     "https://matrix.example",
-		UserID:         "@bot:example",
+		UserID:         id.UserID("@bot:example"),
 		AccessToken:    "tok",
-		DeviceID:       "DEV",
+		DeviceID:       id.DeviceID("DEV"),
 		PickleKey:      "pickle-secret",
 		CryptoDB:       "/tmp/matrixbot-crypto-test.db",
 		RecoveryKey:    "EsTQ 9MUs xSRn",
-		OperatorUserID: "@dave:example",
+		OperatorUserID: id.UserID("@dave:example"),
 	}
 	bot, err := NewBot(cfg)
 	if err != nil {
@@ -163,9 +163,9 @@ func TestNewBotUsesProvidedLogger(t *testing.T) {
 	zl := zerolog.Nop()
 	cfg := BotConfig{
 		Homeserver:  "https://matrix.example",
-		UserID:      "@bot:example",
+		UserID:      id.UserID("@bot:example"),
 		AccessToken: "tok",
-		DeviceID:    "DEV",
+		DeviceID:    id.DeviceID("DEV"),
 		Logger:      &zl,
 	}
 	bot, err := NewBot(cfg)
@@ -177,12 +177,35 @@ func TestNewBotUsesProvidedLogger(t *testing.T) {
 	}
 }
 
+// TestBotClearSecretsZerosKeys pins the security-relevant invariant from
+// Run: once the cryptohelper / e2ee.Bootstrap have taken the keys, Bot's
+// own copies are cleared so a later stack dump or log statement can't leak
+// them. The helpers are extracted so this can be verified without standing
+// up a real cryptohelper.
+func TestBotClearSecretsZerosKeys(t *testing.T) {
+	b := &Bot{
+		pickleKey:   "pickle-secret",
+		recoveryKey: "recovery-secret",
+	}
+	b.clearPickleKey()
+	if b.pickleKey != "" {
+		t.Errorf("pickleKey = %q, want empty after clearPickleKey", b.pickleKey)
+	}
+	if b.recoveryKey == "" {
+		t.Error("clearPickleKey unexpectedly zeroed recoveryKey")
+	}
+	b.clearRecoveryKey()
+	if b.recoveryKey != "" {
+		t.Errorf("recoveryKey = %q, want empty after clearRecoveryKey", b.recoveryKey)
+	}
+}
+
 func TestNewBotCryptoDisabledWhenPickleKeyEmpty(t *testing.T) {
 	cfg := BotConfig{
 		Homeserver:  "https://matrix.example",
-		UserID:      "@bot:example",
+		UserID:      id.UserID("@bot:example"),
 		AccessToken: "tok",
-		DeviceID:    "DEV",
+		DeviceID:    id.DeviceID("DEV"),
 		PickleKey:   "",
 		CryptoDB:    "./matrixbot-crypto.db",
 	}
@@ -202,9 +225,9 @@ func TestNewBotCryptoDisabledWhenPickleKeyEmpty(t *testing.T) {
 func TestNewBotPopulatesAutoJoinRooms(t *testing.T) {
 	cfg := BotConfig{
 		Homeserver:  "https://matrix.example",
-		UserID:      "@bot:example",
+		UserID:      id.UserID("@bot:example"),
 		AccessToken: "tok",
-		DeviceID:    "DEV",
+		DeviceID:    id.DeviceID("DEV"),
 		AutoJoinRooms: []id.RoomID{
 			id.RoomID("!one:example"),
 			id.RoomID("!two:example"),

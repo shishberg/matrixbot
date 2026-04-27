@@ -26,19 +26,24 @@ type Config struct {
 // RoomConfig is one room's view: the set of routes that fire in this room,
 // plus an opaque Extensions blob the host program decodes for handler
 // credentials and per-room handler tuning. Routes within a room are
-// evaluated in registration order; first match wins.
+// evaluated in registration order; first match wins. An empty or missing
+// routes list means the bot still joins the room but ignores every event
+// it sees there.
 type RoomConfig struct {
 	// Extensions is host-decoded; matrixbot has no opinion on its shape.
 	// One block per room is the source of truth for credentials shared by
 	// every route in that room.
 	Extensions json.RawMessage `json:"extensions,omitempty"`
-	Routes     []RouteConfig   `json:"routes"`
+	Routes     []RouteConfig   `json:"routes,omitempty"`
 }
 
 // RouteConfig binds one trigger kind to one handler kind. Trigger-shape
-// fields (Prefix, Emoji) and route-shape knobs (Limit) live here because
-// they vary per route inside a single room; handler credentials do not
-// — those come from RoomConfig.Extensions.
+// fields (Prefix, Emoji) stay here because matrixbot itself reads them to
+// decide whether the route's Trigger fires. Handler-side per-route knobs
+// — page sizes, system prompts, anything else specific to one handler —
+// live inside the opaque Extensions blob, which the host program decodes
+// on its own terms. That mirrors RoomConfig.Extensions one level up:
+// matrixbot has no opinion on its shape.
 type RouteConfig struct {
 	Trigger string `json:"trigger"`
 	Handler string `json:"handler"`
@@ -46,9 +51,10 @@ type RouteConfig struct {
 	Prefix string `json:"prefix,omitempty"`
 	// Emoji is the unicode emoji a "reaction" trigger looks for.
 	Emoji string `json:"emoji,omitempty"`
-	// Limit is a generic pagination knob for handlers that fetch lists.
-	// Zero means "use the handler's default".
-	Limit int `json:"limit,omitempty"`
+	// Extensions is host-decoded per-route configuration. matrixbot
+	// preserves the bytes verbatim across save/load and never inspects
+	// the contents.
+	Extensions json.RawMessage `json:"extensions,omitempty"`
 }
 
 // LoadConfig reads config.json from dd. ErrNotInitialized wraps the

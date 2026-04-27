@@ -1,6 +1,8 @@
-// Package e2ee wraps the mautrix cross-signing and SAS-verification helpers
-// in a way that's easy to drop into another bot: it depends only on the
-// standard library and mautrix, never on its host project's config or logger.
+// Package e2ee is matrixbot's cross-signing and SAS-verification layer. It
+// sits directly on top of mautrix, with no dependency on the rest of
+// matrixbot: matrixbot's Bot.Run calls into it during steady-state startup,
+// and a host program's Bootstrapper implementation calls Bootstrap during
+// RunInit to mint the first-run cross-signing identity.
 //
 // Two pieces live here:
 //   - Bootstrap (this file) generates or imports the cross-signing keys an

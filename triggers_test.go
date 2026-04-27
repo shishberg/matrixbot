@@ -93,7 +93,7 @@ func TestExtractMessageTextHandlesNoMention(t *testing.T) {
 	}
 }
 
-func TestShouldHandleReactionAcceptsTaskEmoji(t *testing.T) {
+func TestShouldHandleReactionAcceptsConfiguredEmoji(t *testing.T) {
 	got, parent := shouldHandleReaction(
 		&event.ReactionEventContent{RelatesTo: event.RelatesTo{
 			Type:    event.RelAnnotation,

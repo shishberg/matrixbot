@@ -37,10 +37,10 @@ type Route struct {
 // The host program builds this from whatever config it keeps on disk.
 type BotConfig struct {
 	Homeserver     string
-	UserID         string
+	UserID         id.UserID
 	AccessToken    string
-	DeviceID       string
-	OperatorUserID string
+	DeviceID       id.DeviceID
+	OperatorUserID id.UserID
 
 	// PickleKey + CryptoDB enable E2EE; an empty PickleKey disables it
 	// (encrypted rooms will not deliver readable events).
@@ -93,11 +93,11 @@ type Bot struct {
 // NewBot constructs the Matrix client. Routes are added with RouteIn() before
 // calling Run().
 func NewBot(cfg BotConfig) (*Bot, error) {
-	client, err := mautrix.NewClient(cfg.Homeserver, id.UserID(cfg.UserID), cfg.AccessToken)
+	client, err := mautrix.NewClient(cfg.Homeserver, cfg.UserID, cfg.AccessToken)
 	if err != nil {
 		return nil, err
 	}
-	client.DeviceID = id.DeviceID(cfg.DeviceID)
+	client.DeviceID = cfg.DeviceID
 	// mautrix defaults to a no-op logger, hiding errors from the SAS state
 	// machine and other crypto code. Hosts pass a shared zerolog logger via
 	// BotConfig.Logger so mautrix's logs go through the same writer and level
@@ -121,13 +121,13 @@ func NewBot(cfg BotConfig) (*Bot, error) {
 		sender:         client,
 		fetcher:        client,
 		joiner:         client,
-		botUserID:      id.UserID(cfg.UserID),
+		botUserID:      cfg.UserID,
 		routesByRoom:   map[id.RoomID][]Route{},
 		autoJoinRooms:  autoJoin,
 		pickleKey:      cfg.PickleKey,
 		cryptoDB:       cfg.CryptoDB,
 		recoveryKey:    cfg.RecoveryKey,
-		operatorUserID: id.UserID(cfg.OperatorUserID),
+		operatorUserID: cfg.OperatorUserID,
 	}, nil
 }
 
@@ -166,10 +166,7 @@ func (b *Bot) Run(ctx context.Context) error {
 			return fmt.Errorf("initialising crypto helper: %w", err)
 		}
 		b.client.Crypto = helper
-		// Drop our reference to the secret now that the helper holds it —
-		// reduces the surface for accidental leaks via stack dumps or future
-		// log statements.
-		b.pickleKey = ""
+		b.clearPickleKey()
 		slog.Info("matrixbot: crypto enabled", "store", b.cryptoDB)
 		defer func() {
 			if cerr := helper.Close(); cerr != nil {
@@ -185,9 +182,7 @@ func (b *Bot) Run(ctx context.Context) error {
 		if _, err := e2ee.Bootstrap(ctx, mach, "", b.recoveryKey); err != nil {
 			return fmt.Errorf("cross-signing: %w", err)
 		}
-		// Drop the recovery key now that mautrix holds the imported
-		// identity — reduces the surface for accidental leaks.
-		b.recoveryKey = ""
+		b.clearRecoveryKey()
 
 		if verifier := e2ee.NewVerifier(b.client, b.operatorUserID); verifier != nil {
 			if err := verifier.Init(ctx, mach); err != nil {
@@ -272,6 +267,20 @@ func (b *Bot) handleInvite(ctx context.Context, evt *event.Event) {
 		return
 	}
 	slog.Info("matrixbot: joined", "room", evt.RoomID)
+}
+
+// clearPickleKey drops the in-memory copy of the pickle key once it has been
+// handed to the cryptohelper. The helper holds the working copy from then on;
+// keeping a second copy on Bot only widens the leak surface (stack dumps,
+// future log lines that accidentally include the receiver).
+func (b *Bot) clearPickleKey() {
+	b.pickleKey = ""
+}
+
+// clearRecoveryKey drops the in-memory copy of the cross-signing recovery key
+// once mautrix has imported the identity. Same reasoning as clearPickleKey.
+func (b *Bot) clearRecoveryKey() {
+	b.recoveryKey = ""
 }
 
 func (b *Bot) send(ctx context.Context, roomID id.RoomID, markdown string) {

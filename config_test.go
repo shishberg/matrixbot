@@ -22,7 +22,7 @@ func TestConfigSaveAndLoadRoundTrip(t *testing.T) {
 				Extensions: json.RawMessage(`{"alpha":{"base_url":"https://m","token":"t","workspace":"eng"}}`),
 				Routes: []RouteConfig{
 					{Trigger: "mention", Handler: "llm"},
-					{Trigger: "command", Prefix: "!do", Handler: "alpha_list", Limit: 20},
+					{Trigger: "command", Prefix: "!do", Handler: "alpha_list", Extensions: json.RawMessage(`{"limit":20}`)},
 				},
 			},
 		},
@@ -43,8 +43,15 @@ func TestConfigSaveAndLoadRoundTrip(t *testing.T) {
 	if len(got.Rooms) != 1 || len(got.Rooms["!a:example"].Routes) != 2 {
 		t.Errorf("Rooms = %+v", got.Rooms)
 	}
-	if r := got.Rooms["!a:example"].Routes[1]; r.Prefix != "!do" || r.Handler != "alpha_list" || r.Limit != 20 {
+	if r := got.Rooms["!a:example"].Routes[1]; r.Prefix != "!do" || r.Handler != "alpha_list" {
 		t.Errorf("route round-trip lost data: %+v", r)
+	}
+	var routeExt map[string]int
+	if err := json.Unmarshal(got.Rooms["!a:example"].Routes[1].Extensions, &routeExt); err != nil {
+		t.Fatalf("unmarshal route extensions: %v", err)
+	}
+	if routeExt["limit"] != 20 {
+		t.Errorf("route extensions round-trip lost data: %v", routeExt)
 	}
 	var ext map[string]map[string]string
 	if err := json.Unmarshal(got.Rooms["!a:example"].Extensions, &ext); err != nil {
@@ -238,6 +245,71 @@ func TestLoadConfigRejectsLegacyPerRouteConfig(t *testing.T) {
 	}
 }
 
+func TestRouteConfigPreservesExtensionsBytes(t *testing.T) {
+	// Per-route Extensions is opaque to matrixbot — it must round-trip
+	// byte-for-byte the same way RoomConfig.Extensions does, so handlers
+	// can decode their own per-route knobs without matrixbot poking at the
+	// shape.
+	dir := t.TempDir()
+	dd := DataDir(dir)
+	raw := `{"page_size":50,"nested":{"k":"v"}}`
+	in := Config{
+		Homeserver: "h", UserID: "u",
+		Rooms: map[string]RoomConfig{
+			"!a:e": {
+				Routes: []RouteConfig{{
+					Trigger:    "command",
+					Handler:    "alpha_list",
+					Prefix:     "!do",
+					Extensions: json.RawMessage(raw),
+				}},
+			},
+		},
+	}
+	if err := in.Save(dd); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	got, err := LoadConfig(dd)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	var roundTripped struct {
+		PageSize int               `json:"page_size"`
+		Nested   map[string]string `json:"nested"`
+	}
+	if err := json.Unmarshal(got.Rooms["!a:e"].Routes[0].Extensions, &roundTripped); err != nil {
+		t.Fatalf("unmarshal route extensions: %v", err)
+	}
+	if roundTripped.PageSize != 50 || roundTripped.Nested["k"] != "v" {
+		t.Errorf("route Extensions round-trip lost data: %+v", roundTripped)
+	}
+}
+
+func TestRouteConfigIgnoresUnknownJSONFields(t *testing.T) {
+	// json.Unmarshal of unknown fields is permissive by default. That's
+	// load-bearing for the D1 transition: bilby's existing on-disk config
+	// has a top-level "limit" on one route, and after dropping the typed
+	// Limit field we want that key to be silently ignored rather than
+	// fail the load. Pin the behaviour so a future switch to
+	// DisallowUnknownFields can't regress it without us noticing.
+	dir := t.TempDir()
+	dd := DataDir(dir)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	raw := []byte(`{"homeserver":"h","user_id":"u","rooms":{"!a:e":{"routes":[{"trigger":"command","handler":"alpha_list","prefix":"!do","limit":20}]}}}`)
+	if err := os.WriteFile(dd.ConfigPath(), raw, 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	got, err := LoadConfig(dd)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if r := got.Rooms["!a:e"].Routes[0]; r.Prefix != "!do" || r.Handler != "alpha_list" {
+		t.Errorf("legacy route load lost data: %+v", r)
+	}
+}
+
 func TestRouteConfigOmitsLegacyConfigField(t *testing.T) {
 	// RouteConfig must not serialise a per-route "config" key any more.
 	// The legacy detector above relies on that key being absent in
@@ -250,6 +322,21 @@ func TestRouteConfigOmitsLegacyConfigField(t *testing.T) {
 	}
 	if strings.Contains(string(out), `"config"`) {
 		t.Errorf("RouteConfig still serialises \"config\": %s", out)
+	}
+}
+
+func TestRoomConfigOmitsRoutesWhenEmpty(t *testing.T) {
+	// A room with no routes should serialise without a "routes": null key.
+	// null routes look broken in a hand-edited config, and the operator
+	// might think they need to delete the room rather than just leave it
+	// silent.
+	r := RoomConfig{Extensions: json.RawMessage(`{"k":"v"}`)}
+	out, err := json.Marshal(r)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(out), `"routes"`) {
+		t.Errorf("RoomConfig serialised an empty routes key: %s", out)
 	}
 }
 

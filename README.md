@@ -20,9 +20,9 @@ Concretely, the package gives you:
 - Built-in triggers: `MentionTrigger`, `CommandTrigger`,
   `ReactionTrigger` — see [Triggers](#triggers) below.
 - A per-room routing config schema — `Config`, `RoomConfig`,
-  `RouteConfig`. Each room carries its own opaque `Extensions`
-  (`json.RawMessage`) blob that the host program decodes on its own
-  terms; matrixbot has no opinion on what's inside.
+  `RouteConfig`. Both `RoomConfig` and `RouteConfig` carry an opaque
+  `Extensions` (`json.RawMessage`) blob that the host program decodes
+  on its own terms; matrixbot has no opinion on what's inside.
 - On-disk state under a single data directory:
   - `config.json` — homeserver, bot user ID, operator user ID, rooms
     with per-room routes and extensions.
@@ -104,7 +104,7 @@ behind if the process is killed mid-write. Backup tooling that copies
       "extensions": { "your_host_specific_blob": "..." },
       "routes": [
         {"trigger": "mention", "handler": "llm"},
-        {"trigger": "command", "prefix": "!tasks", "handler": "list", "limit": 20},
+        {"trigger": "command", "prefix": "!tasks", "handler": "list", "extensions": {"page_size": 20}},
         {"trigger": "reaction", "emoji": "📝", "handler": "create"}
       ]
     }
@@ -112,10 +112,14 @@ behind if the process is killed mid-write. Backup tooling that copies
 }
 ```
 
-`Trigger`, `Handler`, `Prefix`, `Emoji`, and `Limit` are the
-trigger/handler-shape fields matrixbot exposes on `RouteConfig`.
-Anything else — credentials, system prompts, per-handler tuning — goes
-inside `extensions` and is decoded by your host program.
+`Trigger`, `Handler`, `Prefix`, and `Emoji` are the trigger-shape
+fields matrixbot reads from `RouteConfig` to decide which events the
+route fires on. Everything else — credentials, system prompts, page
+sizes, per-handler tuning — goes inside an `extensions` block and is
+decoded by your host program. The room's `extensions` block holds
+config shared by every route in that room (typically credentials);
+each route's own `extensions` block holds knobs specific to that one
+route.
 
 ## Bot, BotConfig, and the runtime loop
 
@@ -130,7 +134,7 @@ bot, err := matrixbot.NewBot(matrixbot.BotConfig{
     CryptoDB:       dd.CryptoDBPath(),
     RecoveryKey:    acct.RecoveryKey,
     AutoJoinRooms:  toRoomIDs(mbCfg.AutoJoinRooms),
-    Logger:         zerologLogger, // optional
+    Logger:         nil, // optional *zerolog.Logger forwarding mautrix's internal logs
 })
 if err != nil { /* ... */ }
 
@@ -163,6 +167,16 @@ there is no post-construction map to mutate.
 `Bot` drops both the pickle key and recovery key from its in-memory
 state once they have been handed off to mautrix — they never leak
 through subsequent log lines or stack dumps.
+
+### Logging
+
+matrixbot writes its own diagnostic events through `log/slog`, so the
+host's `slog.SetDefault(...)` (handler, level, output) controls
+matrixbot's logs. `BotConfig.Logger` is a separate channel: it carries
+mautrix's underlying zerolog stream (crypto, sync, HTTP). Pass a
+non-nil `*zerolog.Logger` to route mautrix's logs through whatever
+writer/level you've already wired up; nil falls back to a no-op so
+tests stay quiet.
 
 ## Routes, triggers, and handlers
 
@@ -358,7 +372,12 @@ func main() {
 		return c, nil
 	}
 
-	bootstrap := func(ctx context.Context, dd matrixbot.DataDir,
+	// Declaring bootstrap with the matrixbot.Bootstrapper type means the
+	// example tracks whatever signature the package currently exposes
+	// rather than carrying a stale inline copy.
+	var bootstrap matrixbot.Bootstrapper = func(
+		ctx context.Context,
+		dd matrixbot.DataDir,
 		accessToken, deviceID, userID, homeserver, password, pickleKey string,
 	) (string, error) {
 		client, err := mautrix.NewClient(homeserver, id.UserID(userID), accessToken)
@@ -430,10 +449,10 @@ func run(ctx context.Context, dd matrixbot.DataDir) error {
 	}
 	bot, err := matrixbot.NewBot(matrixbot.BotConfig{
 		Homeserver:     cfg.Homeserver,
-		UserID:         cfg.UserID,
+		UserID:         id.UserID(cfg.UserID),
 		AccessToken:    sess.AccessToken,
-		DeviceID:       sess.DeviceID,
-		OperatorUserID: cfg.OperatorUserID,
+		DeviceID:       id.DeviceID(sess.DeviceID),
+		OperatorUserID: id.UserID(cfg.OperatorUserID),
 		PickleKey:      acct.PickleKey,
 		CryptoDB:       dd.CryptoDBPath(),
 		RecoveryKey:    acct.RecoveryKey,
