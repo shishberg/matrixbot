@@ -2,6 +2,10 @@
 *.test
 *.out
 
+# Editor / OS scratch files
+*.swp
+.DS_Store
+
 # Vendored dependencies (we use modules, not vendoring)
 vendor/
 

@@ -62,9 +62,13 @@ func LoadConfig(dd DataDir) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	for _, k := range []string{"room_id", "target_room_id", "mopoke_base_url", "mopoke_token", "mopoke_workspace"} {
+	// Top-level keys from matrixbot's earlier single-room schema. Each one
+	// here means the operator's config predates the per-room rooms map and
+	// can't be silently migrated, because the new schema needs information
+	// (which routes belong in which room) the old file doesn't carry.
+	for _, k := range []string{"room_id", "target_room_id"} {
 		if _, ok := raw[k]; ok {
-			return Config{}, fmt.Errorf("config schema changed; please rerun 'bilby init' and re-add your rooms by hand-editing %s", path)
+			return Config{}, fmt.Errorf("config schema changed; please reinitialize this data directory and re-add your rooms by hand-editing %s", path)
 		}
 	}
 	// A top-level "extensions" block was the v1 home for global handler

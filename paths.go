@@ -3,8 +3,8 @@
 // on-disk layout under a single data directory and never reads
 // host-project-specific env vars.
 //
-// The package is intended to be extracted into a shared module, so it
-// must not import anything from its host program.
+// The package is shared across host programs, so it must not import
+// anything bot-specific from its host.
 package matrixbot
 
 import (

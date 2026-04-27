@@ -19,10 +19,10 @@ func TestConfigSaveAndLoadRoundTrip(t *testing.T) {
 		AutoJoinRooms:  []string{"!a:example", "!b:example"},
 		Rooms: map[string]RoomConfig{
 			"!a:example": {
-				Extensions: json.RawMessage(`{"mopoke":{"base_url":"https://m","token":"t","workspace":"eng"}}`),
+				Extensions: json.RawMessage(`{"alpha":{"base_url":"https://m","token":"t","workspace":"eng"}}`),
 				Routes: []RouteConfig{
 					{Trigger: "mention", Handler: "llm"},
-					{Trigger: "command", Prefix: "!tasks", Handler: "mopoke_list", Limit: 20},
+					{Trigger: "command", Prefix: "!do", Handler: "alpha_list", Limit: 20},
 				},
 			},
 		},
@@ -43,14 +43,14 @@ func TestConfigSaveAndLoadRoundTrip(t *testing.T) {
 	if len(got.Rooms) != 1 || len(got.Rooms["!a:example"].Routes) != 2 {
 		t.Errorf("Rooms = %+v", got.Rooms)
 	}
-	if r := got.Rooms["!a:example"].Routes[1]; r.Prefix != "!tasks" || r.Handler != "mopoke_list" || r.Limit != 20 {
+	if r := got.Rooms["!a:example"].Routes[1]; r.Prefix != "!do" || r.Handler != "alpha_list" || r.Limit != 20 {
 		t.Errorf("route round-trip lost data: %+v", r)
 	}
 	var ext map[string]map[string]string
 	if err := json.Unmarshal(got.Rooms["!a:example"].Extensions, &ext); err != nil {
 		t.Fatalf("unmarshal room extensions: %v", err)
 	}
-	if ext["mopoke"]["token"] != "t" {
+	if ext["alpha"]["token"] != "t" {
 		t.Errorf("room extensions round-trip lost data: %v", ext)
 	}
 }
@@ -195,7 +195,7 @@ func TestLoadConfigRejectsTopLevelExtensions(t *testing.T) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	legacy := []byte(`{"homeserver":"h","user_id":"u","extensions":{"mopoke":{"base_url":"x"}}}`)
+	legacy := []byte(`{"homeserver":"h","user_id":"u","extensions":{"alpha":{"base_url":"x"}}}`)
 	if err := os.WriteFile(dd.ConfigPath(), legacy, 0o600); err != nil {
 		t.Fatalf("write: %v", err)
 	}

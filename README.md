@@ -55,10 +55,13 @@ Concretely, the package gives you:
   per-room schema in the host and unmarshal that field yourself.
 - It does **not** read host-specific env vars. The only env var
   matrixbot reads is `MATRIXBOT_DATA_DIR` (to relocate the data
-  directory) and the four `MATRIX_*` variables that seed prompt
-  defaults during `RunInit` (`MATRIX_HOMESERVER`, `MATRIX_USER_ID`,
-  `MATRIX_PASSWORD`, `MATRIX_OPERATOR_USER_ID`). Once `init` has run,
-  runtime config never looks at env again.
+  directory) and the four `MATRIX_*` variables `RunInit` consults
+  (`MATRIX_HOMESERVER`, `MATRIX_USER_ID`, `MATRIX_PASSWORD`,
+  `MATRIX_OPERATOR_USER_ID`). When set, each is used directly without
+  prompting — handy for a non-interactive `init` from an existing
+  `.envrc`, but it means `MATRIX_PASSWORD` in the environment silently
+  bypasses the password prompt. Once `init` has run, runtime config
+  never looks at env again.
 
 ## Data directory layout
 
@@ -77,6 +80,11 @@ identity.
 | `session.json` | `Session`: access token + device ID                                  |
 | `account.json` | `Account`: cross-signing recovery key + crypto-store pickle key      |
 | `crypto.db`    | Host-managed SQLite olm/megolm store (+ `-wal` / `-shm` sidecars)    |
+
+Note: matrixbot writes each JSON file via write-then-rename, so a
+sibling `<name>.json.tmp` exists briefly during a save and may be left
+behind if the process is killed mid-write. Backup tooling that copies
+`.matrixbot/` should either tolerate or glob-ignore `*.tmp`.
 
 `config.json` example:
 
@@ -117,16 +125,20 @@ real implementations and tests can plug in fakes:
 | `Prompter`                                                    | init+login | `NewStdioPrompter(os.Stdin, os.Stdout)`.                                                           |
 | `EnvLookup`                                                   | init       | `EnvLookupFunc(os.Getenv)`.                                                                        |
 
-The `Bootstrapper` contract has one footgun worth flagging: if the
-recovery key is non-empty, **persist it even when the error is
-non-nil**. A half-bootstrapped account can have its SSSS key minted
-before a UIA-gated upload fails; the recovery key returned in that case
-is the operator's only way back into the account. `RunInit` already
-follows this rule when calling the host's `Bootstrapper`.
+The `Bootstrapper` contract has one footgun worth flagging. The host
+program supplies the `Bootstrapper`; any implementation MUST return the
+recovery key it managed to mint, **even when it returns a non-nil
+error**. A half-bootstrapped account can have its SSSS key minted
+before a UIA-gated upload fails; the recovery key produced in that case
+is the operator's only way back into the account. `RunInit` is the
+consumer of this contract — it persists whatever recovery key the
+`Bootstrapper` returns before propagating the bootstrap error.
 
 `InitDeps`, `LoginDeps`, and `LogoutDeps` each carry a `ProgramName`
 field. Operator-facing messages substitute it in (e.g. `"run 'mybot
-init' first"`); empty falls back to `"the bot"`.
+init' first"`); empty falls back to `"the bot"`. The `Initialized X.
+Run 'Y' to start.` line `RunInit` prints on success is where most
+operators will first see this name, so set it in your host program.
 
 ## How a host program wires this up
 
@@ -179,7 +191,8 @@ func main() {
 		return "", nil
 	}
 
-	switch cmd, _ := argOrEmpty(os.Args, 1), 0; cmd {
+	cmd := argOrEmpty(os.Args, 1)
+	switch cmd {
 	case "init":
 		err = matrixbot.RunInit(ctx, dd, matrixbot.InitDeps{
 			LoginFactory: loginFactory,
@@ -226,11 +239,11 @@ func main() {
 	}
 }
 
-func argOrEmpty(args []string, i int) (string, bool) {
+func argOrEmpty(args []string, i int) string {
 	if i >= len(args) {
-		return "", false
+		return ""
 	}
-	return args[i], true
+	return args[i]
 }
 
 func fail(err error) {
