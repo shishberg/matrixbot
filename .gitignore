@@ -1,0 +1,11 @@
+# Compiled test binaries and coverage output
+*.test
+*.out
+
+# Vendored dependencies (we use modules, not vendoring)
+vendor/
+
+# Bot data directory — holds Matrix credentials, recovery key, pickle
+# key, and the olm/megolm crypto store. Never commit, even from a test
+# run that happened to write here.
+.matrixbot/
