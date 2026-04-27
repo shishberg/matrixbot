@@ -283,11 +283,22 @@ func (b *Bot) clearRecoveryKey() {
 	b.recoveryKey = ""
 }
 
-func (b *Bot) send(ctx context.Context, roomID id.RoomID, markdown string) {
+// Send renders markdown to HTML and posts it to roomID, returning whatever
+// error the homeserver call produced. It is the seam for consumers that
+// post unsolicited messages (notifiers, schedulers, anything posting
+// independent of the incoming-event dispatch loop) and want to decide
+// themselves whether a delivery failure matters. The internal dispatch
+// path uses the unexported send wrapper, which logs and swallows.
+func (b *Bot) Send(ctx context.Context, roomID id.RoomID, markdown string) error {
 	content := format.RenderMarkdown(markdown, true, false)
 	content.MsgType = event.MsgText
 	content.Format = event.FormatHTML
-	if _, err := b.sender.SendMessageEvent(ctx, roomID, event.EventMessage, &content); err != nil {
+	_, err := b.sender.SendMessageEvent(ctx, roomID, event.EventMessage, &content)
+	return err
+}
+
+func (b *Bot) send(ctx context.Context, roomID id.RoomID, markdown string) {
+	if err := b.Send(ctx, roomID, markdown); err != nil {
 		slog.Warn("matrixbot: send failed", "err", err)
 		return
 	}

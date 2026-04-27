@@ -168,6 +168,12 @@ there is no post-construction map to mutate.
 state once they have been handed off to mautrix — they never leak
 through subsequent log lines or stack dumps.
 
+`Bot.Send(ctx, roomID, markdown)` is the public seam for posting
+messages that aren't replies to an incoming event (notifiers,
+schedulers, periodic summaries): it renders Markdown to HTML and
+returns the homeserver error so the caller decides whether a delivery
+failure matters.
+
 ### Logging
 
 matrixbot writes its own diagnostic events through `log/slog`, so the

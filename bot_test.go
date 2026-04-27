@@ -29,11 +29,12 @@ func captureSlog(t *testing.T) *bytes.Buffer {
 // fakeSender records SendMessageEvent calls and answers GetEvent from a map.
 // It satisfies both matrixSender and EventFetcher.
 type fakeSender struct {
-	mu      sync.Mutex
-	sent    []string
-	parents map[id.EventID]*event.Event
-	getErr  error
-	sendErr error
+	mu       sync.Mutex
+	sent     []string
+	contents []*event.MessageEventContent
+	parents  map[id.EventID]*event.Event
+	getErr   error
+	sendErr  error
 }
 
 // fakeJoiner records JoinRoomByID calls so invite-handler tests can assert
@@ -62,6 +63,7 @@ func (f *fakeSender) SendMessageEvent(ctx context.Context, roomID id.RoomID, eve
 	}
 	if mec, ok := contentJSON.(*event.MessageEventContent); ok && mec != nil {
 		f.sent = append(f.sent, mec.Body)
+		f.contents = append(f.contents, mec)
 	}
 	return &mautrix.RespSendEvent{}, nil
 }
@@ -624,6 +626,69 @@ func TestBotRouteInIsolatesRooms(t *testing.T) {
 
 	if roomACalls != 0 {
 		t.Errorf("route in room A fired for room B event: %d calls", roomACalls)
+	}
+}
+
+// TestBotSendReturnsSendError pins the public Send contract: it surfaces
+// the SendMessageEvent error to the caller unchanged, instead of swallowing
+// and logging like the dispatch path does. Notifiers and schedulers post
+// independently of incoming events and need to know whether the post
+// landed.
+func TestBotSendReturnsSendError(t *testing.T) {
+	wantErr := errors.New("homeserver down")
+	sender := &fakeSender{sendErr: wantErr}
+	bot := newTestBot(sender, sender)
+
+	buf := captureSlog(t)
+
+	gotErr := bot.Send(context.Background(), id.RoomID("!r:e"), "hello")
+
+	if !errors.Is(gotErr, wantErr) {
+		t.Errorf("Send returned %v, want %v", gotErr, wantErr)
+	}
+	if strings.Contains(buf.String(), "send failed") {
+		t.Errorf("Send should not log on failure (caller decides); log was %q", buf.String())
+	}
+}
+
+// TestBotSendRendersMarkdown pins that Send still does the markdown→HTML
+// rendering that private send did, so consumers get formatted output for
+// free.
+func TestBotSendRendersMarkdown(t *testing.T) {
+	sender := &fakeSender{}
+	bot := newTestBot(sender, sender)
+
+	if err := bot.Send(context.Background(), id.RoomID("!r:e"), "**bold**"); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if len(sender.contents) != 1 {
+		t.Fatalf("expected one send, got %d", len(sender.contents))
+	}
+	mec := sender.contents[0]
+	if mec.MsgType != event.MsgText {
+		t.Errorf("MsgType = %q, want %q", mec.MsgType, event.MsgText)
+	}
+	if mec.Format != event.FormatHTML {
+		t.Errorf("Format = %q, want %q", mec.Format, event.FormatHTML)
+	}
+	if !strings.Contains(mec.FormattedBody, "<strong>bold</strong>") {
+		t.Errorf("FormattedBody = %q, want HTML rendering of **bold**", mec.FormattedBody)
+	}
+}
+
+// TestBotSendSuccessQuiet pins that Send does not log on success either —
+// it is purely a transport call; logging is the dispatch wrapper's job.
+func TestBotSendSuccessQuiet(t *testing.T) {
+	sender := &fakeSender{}
+	bot := newTestBot(sender, sender)
+
+	buf := captureSlog(t)
+
+	if err := bot.Send(context.Background(), id.RoomID("!r:e"), "hi"); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if strings.Contains(buf.String(), "sent reply") {
+		t.Errorf("Send should not log on success; log was %q", buf.String())
 	}
 }
 
