@@ -318,6 +318,49 @@ func TestReactionTriggerEmptyParentBodyDoesNotMatch(t *testing.T) {
 	}
 }
 
+// TestReactionTriggerWithDecryptingFetcherReadsEncryptedParent pins the
+// "callers don't care" guarantee: when the room is encrypted, ReactionTrigger
+// fed through the decrypting fetcher matches and exposes the decrypted
+// parent body.
+func TestReactionTriggerWithDecryptingFetcherReadsEncryptedParent(t *testing.T) {
+	encrypted := &event.Event{
+		Type:   event.EventEncrypted,
+		ID:     id.EventID("$parent"),
+		RoomID: id.RoomID("!room:e"),
+	}
+	plaintext := &event.Event{
+		Type:    event.EventMessage,
+		Content: event.Content{Parsed: &event.MessageEventContent{Body: "the parent text"}},
+	}
+	srv := newEventServer(t, encrypted)
+	client := newClientForTest(t, srv.URL)
+	client.Crypto = &fakeCryptoHelper{plaintext: plaintext}
+	fetcher := newDecryptingFetcher(client)
+
+	rt := ReactionTrigger{Emoji: "📝", BotUserID: id.UserID("@bot:e")}
+	evt := &event.Event{
+		RoomID: id.RoomID("!room:e"),
+		Sender: id.UserID("@u:e"),
+		Content: event.Content{Parsed: &event.ReactionEventContent{
+			RelatesTo: event.RelatesTo{
+				Type:    event.RelAnnotation,
+				EventID: id.EventID("$parent"),
+				Key:     "📝",
+			},
+		}},
+	}
+	req, ok, err := rt.Apply(context.Background(), evt, fetcher)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected match against encrypted parent decrypted via wrapper")
+	}
+	if req.Input != "the parent text" {
+		t.Errorf("Input = %q, want %q", req.Input, "the parent text")
+	}
+}
+
 func TestReactionTriggerSurfacesFetcherError(t *testing.T) {
 	fetcher := &fakeSender{getErr: errors.New("network down")}
 	rt := ReactionTrigger{

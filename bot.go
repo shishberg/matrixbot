@@ -122,7 +122,7 @@ func NewBot(cfg BotConfig) (*Bot, error) {
 	return &Bot{
 		client:         client,
 		sender:         client,
-		fetcher:        client,
+		fetcher:        newDecryptingFetcher(client),
 		joiner:         client,
 		botUserID:      cfg.UserID,
 		routesByRoom:   map[id.RoomID][]Route{},
