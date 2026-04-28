@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"maunium.net/go/mautrix"
+	"maunium.net/go/mautrix/crypto"
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
 )
@@ -34,6 +35,14 @@ func (f *fakeCryptoHelper) Encrypt(ctx context.Context, _ id.RoomID, _ event.Typ
 func (f *fakeCryptoHelper) Decrypt(ctx context.Context, evt *event.Event) (*event.Event, error) {
 	f.called++
 	f.got = evt
+	// Mirror the precondition the real mautrix DecryptMegolmEvent enforces:
+	// callers must hand us an event whose Content.Parsed is the encrypted
+	// content struct. A no-op wrapper that forwarded the raw HTTP event would
+	// fail this assertion in production; surfacing it here keeps the fake
+	// honest.
+	if _, ok := evt.Content.Parsed.(*event.EncryptedEventContent); !ok {
+		return nil, crypto.ErrIncorrectEncryptedContentType
+	}
 	if f.err != nil {
 		return nil, f.err
 	}
@@ -278,6 +287,68 @@ func TestNewBotFetcherDecryptsViaClientCrypto(t *testing.T) {
 	}
 	if helper.called != 1 {
 		t.Errorf("Decrypt called %d times, want 1 (NewBot must install the decrypting wrapper)", helper.called)
+	}
+	if got == nil || parentEventBody(got) != "decrypted body" {
+		t.Errorf("got body = %q, want %q", parentEventBody(got), "decrypted body")
+	}
+}
+
+// TestDecryptingFetcherParsesRawEncryptedContent is the regression guard for
+// the production "event content is not instance of *event.EncryptedEventContent"
+// crash. The server replies with a raw JSON envelope whose `content` block is
+// the on-the-wire encrypted payload — exactly what mautrix.GetEvent unmarshals
+// in production, leaving Content.VeryRaw populated and Content.Parsed nil. The
+// wrapper must call ParseRaw before handing the event to Decrypt; the tightened
+// fakeCryptoHelper rejects any event whose Parsed field isn't an
+// *event.EncryptedEventContent, so a no-op wrapper would fail this test with
+// the same error the operator saw.
+func TestDecryptingFetcherParsesRawEncryptedContent(t *testing.T) {
+	rawEvent := []byte(`{
+		"type": "m.room.encrypted",
+		"event_id": "$enc",
+		"room_id": "!r:e",
+		"sender": "@u:e",
+		"content": {
+			"algorithm": "m.megolm.v1.aes-sha2",
+			"ciphertext": "AwgAEpABxxxxxx",
+			"sender_key": "senderKeyValue",
+			"device_id": "DEVICE",
+			"session_id": "sessionIDValue"
+		}
+	}`)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(rawEvent)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	plaintext := &event.Event{
+		Type:    event.EventMessage,
+		Content: event.Content{Parsed: &event.MessageEventContent{Body: "decrypted body"}},
+	}
+	client := newClientForTest(t, srv.URL)
+	helper := &fakeCryptoHelper{plaintext: plaintext}
+	client.Crypto = helper
+
+	f := newDecryptingFetcher(client)
+	got, err := f.GetEvent(context.Background(), id.RoomID("!r:e"), id.EventID("$enc"))
+	if err != nil {
+		t.Fatalf("GetEvent: %v", err)
+	}
+	if helper.called != 1 {
+		t.Errorf("Decrypt called %d times, want 1", helper.called)
+	}
+	if helper.got == nil {
+		t.Fatal("Decrypt was not handed the event")
+	}
+	parsed, ok := helper.got.Content.Parsed.(*event.EncryptedEventContent)
+	if !ok {
+		t.Fatalf("Content.Parsed = %T, want *event.EncryptedEventContent", helper.got.Content.Parsed)
+	}
+	if parsed.SessionID != "sessionIDValue" {
+		t.Errorf("Parsed.SessionID = %q, want %q", parsed.SessionID, "sessionIDValue")
 	}
 	if got == nil || parentEventBody(got) != "decrypted body" {
 		t.Errorf("got body = %q, want %q", parentEventBody(got), "decrypted body")
