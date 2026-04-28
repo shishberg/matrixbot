@@ -354,3 +354,28 @@ func TestConfigSaveCreatesDataDirWith0700(t *testing.T) {
 		t.Errorf("dir mode = %o, want 0700", got)
 	}
 }
+
+func TestConfigSaveTightensExistingWideDataDir(t *testing.T) {
+	// os.MkdirAll only applies the mode when it actually creates the
+	// directory. If MATRIXBOT_DATA_DIR points at an existing 0755
+	// directory, the README's "directory is 0700" promise is silently
+	// false. Save must clamp it.
+	dir := t.TempDir()
+	dd := DataDir(filepath.Join(dir, "wide"))
+	if err := os.MkdirAll(string(dd), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.Chmod(string(dd), 0o755); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	if err := (Config{Homeserver: "h", UserID: "u"}).Save(dd); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	info, err := os.Stat(string(dd))
+	if err != nil {
+		t.Fatalf("stat dir: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o700 {
+		t.Errorf("dir mode = %o, want 0700", got)
+	}
+}

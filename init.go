@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 
 	"maunium.net/go/mautrix"
@@ -134,6 +135,15 @@ func RunInit(ctx context.Context, dd DataDir, deps InitDeps) error {
 	}
 
 	recoveryKey, bootErr := deps.Bootstrap(ctx, dd, session.AccessToken, session.DeviceID, cfg.UserID, cfg.Homeserver, password, pickleKey)
+
+	// Bootstrap opens crypto.db with the process umask (typically 0644),
+	// so clamp it down to match the rest of the data dir. Run on the
+	// half-bootstrap path too — the file is on disk regardless of bootErr.
+	// Failures here are hardening, not correctness, so log and move on
+	// (mirrors bot.go).
+	if err := secureCryptoDBFiles(dd.CryptoDBPath()); err != nil {
+		slog.Warn("matrixbot: tightening crypto db permissions", "err", err, "store", dd.CryptoDBPath())
+	}
 
 	// Persist account.json BEFORE returning bootErr: e2ee.Bootstrap can
 	// return a non-empty recovery key alongside an error (the SSSS key

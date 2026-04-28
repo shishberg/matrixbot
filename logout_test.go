@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -112,6 +113,54 @@ func TestRunLogoutErrorsWhenSessionMissing(t *testing.T) {
 	err := RunLogout(context.Background(), dd, deps)
 	if err == nil {
 		t.Fatal("want error, got nil")
+	}
+}
+
+func TestRunLogoutFailsWhenLocalRemovalFails(t *testing.T) {
+	// If a local-cleanup remove fails (EACCES, EISDIR, …), RunLogout
+	// must NOT print "logged out" and must return an error: the operator
+	// otherwise believes the bot is logged out while the access token is
+	// still on disk. Every other path that *can* be removed must still be
+	// removed — no early return — so a single broken file doesn't leave
+	// the rest behind.
+	dd := seedLoggedInDataDir(t)
+	// Replace one of the seeded crypto sidecars with a non-empty
+	// directory so os.Remove fails with ENOTEMPTY rather than success.
+	// The other paths stay as removable files.
+	cryptoPaths := dd.CryptoDBPaths()
+	wal := cryptoPaths[1]
+	if err := os.Remove(wal); err != nil {
+		t.Fatalf("clear wal: %v", err)
+	}
+	if err := os.Mkdir(wal, 0o700); err != nil {
+		t.Fatalf("mkdir wal: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(wal, "blocker"), []byte("x"), 0o600); err != nil {
+		t.Fatalf("seed blocker: %v", err)
+	}
+
+	fake := &fakeLogoutClient{}
+	out := &bytes.Buffer{}
+	deps := LogoutDeps{
+		LogoutFactory: func(string, string) (LogoutClient, error) { return fake, nil },
+		Stdout:        out,
+	}
+	err := RunLogout(context.Background(), dd, deps)
+	if err == nil {
+		t.Fatal("want error, got nil")
+	}
+	if !strings.Contains(err.Error(), wal) {
+		t.Errorf("err should mention failing path %q, got %q", wal, err)
+	}
+	if strings.Contains(out.String(), "logged out") {
+		t.Errorf("stdout should not announce 'logged out' on failure: %q", out.String())
+	}
+	// The other removable paths must still be gone — RunLogout must not
+	// short-circuit on the first failure.
+	for _, p := range append([]string{dd.SessionPath()}, cryptoPaths[0], cryptoPaths[2]) {
+		if _, statErr := os.Stat(p); !errors.Is(statErr, os.ErrNotExist) {
+			t.Errorf("%s should still have been removed despite the failure on %s (stat err: %v)", p, wal, statErr)
+		}
 	}
 }
 

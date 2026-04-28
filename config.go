@@ -163,10 +163,14 @@ func (c Config) Save(dd DataDir) error {
 
 // ensureDataDir creates dd with mode 0700 if it doesn't exist. The data
 // dir holds secrets, so we want it private to the operator from the
-// moment it's created — never widen.
+// moment it's created — never widen. The follow-up Chmod covers the
+// pre-existing-directory case, where MkdirAll's mode is a no-op.
 func ensureDataDir(dd DataDir) error {
 	if err := os.MkdirAll(string(dd), 0o700); err != nil {
 		return fmt.Errorf("creating data dir %s: %w", dd, err)
+	}
+	if err := os.Chmod(string(dd), 0o700); err != nil {
+		return fmt.Errorf("tightening data dir %s: %w", dd, err)
 	}
 	return nil
 }

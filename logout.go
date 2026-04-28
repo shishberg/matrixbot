@@ -67,25 +67,39 @@ func RunLogout(ctx context.Context, dd DataDir, deps LogoutDeps) error {
 		}
 	}
 
-	reportRemoval(deps.Stdout, dd.SessionPath())
+	var failures []error
+	if err := reportRemoval(deps.Stdout, dd.SessionPath()); err != nil {
+		failures = append(failures, err)
+	}
 	for _, p := range dd.CryptoDBPaths() {
-		reportRemoval(deps.Stdout, p)
+		if err := reportRemoval(deps.Stdout, p); err != nil {
+			failures = append(failures, err)
+		}
+	}
+	if len(failures) > 0 {
+		// An operator who sees "logged out" while the access token is
+		// still on disk is the failure mode this guards against.
+		return fmt.Errorf("local cleanup failed: %w", errors.Join(failures...))
 	}
 	fmt.Fprintln(deps.Stdout, "logged out")
 	return nil
 }
 
-// reportRemoval deletes path and prints "removed: <path>" or
-// "not found: <path>" depending on whether it was there. Other errors
-// (permission denied, etc.) are reported but don't abort the command.
-func reportRemoval(stdout io.Writer, path string) {
+// reportRemoval deletes path, prints a one-line status, and returns nil
+// when the path is gone (either removed now or already absent). A real
+// removal failure prints the same status line and returns the error so
+// RunLogout can refuse to claim success.
+func reportRemoval(stdout io.Writer, path string) error {
 	err := os.Remove(path)
 	switch {
 	case err == nil:
 		fmt.Fprintf(stdout, "removed: %s\n", path)
+		return nil
 	case errors.Is(err, os.ErrNotExist):
 		fmt.Fprintf(stdout, "not found: %s\n", path)
+		return nil
 	default:
 		fmt.Fprintf(stdout, "remove failed: %s: %s\n", path, err)
+		return fmt.Errorf("remove %s: %w", path, err)
 	}
 }

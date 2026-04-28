@@ -13,18 +13,38 @@ import (
 )
 
 // fakeBootstrapper records its inputs and returns a canned recovery key.
+// When writeCryptoDB is true it also writes a fake crypto.db (and the WAL
+// / SHM sidecars) at mode 0644 to mirror what mautrix's cryptohelper does
+// — it opens the SQLite store with the process umask, leaving the files
+// world-readable on a default Mac/Linux setup. RunInit is supposed to
+// clamp those down to 0600.
 type fakeBootstrapper struct {
 	gotPickleKey  string
 	gotPassword   string
 	recoveryKey   string
 	err           error
 	calledOpenDir DataDir
+	writeCryptoDB bool
 }
 
 func (f *fakeBootstrapper) Bootstrap(ctx context.Context, dd DataDir, accessToken, deviceID, userID, homeserver, password, pickleKey string) (string, error) {
 	f.gotPickleKey = pickleKey
 	f.gotPassword = password
 	f.calledOpenDir = dd
+	if f.writeCryptoDB {
+		if err := os.MkdirAll(string(dd), 0o700); err != nil {
+			return f.recoveryKey, err
+		}
+		for _, p := range dd.CryptoDBPaths() {
+			if err := os.WriteFile(p, []byte("fake"), 0o644); err != nil {
+				return f.recoveryKey, err
+			}
+			// WriteFile honours umask, so chmod explicitly to pin the mode.
+			if err := os.Chmod(p, 0o644); err != nil {
+				return f.recoveryKey, err
+			}
+		}
+	}
 	return f.recoveryKey, f.err
 }
 
@@ -259,6 +279,55 @@ func TestRunInitErrorsWhenServerOmitsDeviceID(t *testing.T) {
 	for _, p := range []string{dd.ConfigPath(), dd.SessionPath(), dd.AccountPath()} {
 		if _, statErr := os.Stat(p); !errors.Is(statErr, os.ErrNotExist) {
 			t.Errorf("%s must not be written when device_id is missing", p)
+		}
+	}
+}
+
+func TestRunInitTightensCryptoDBPermissions(t *testing.T) {
+	// mautrix's cryptohelper opens crypto.db with the process umask
+	// (typically 0644). RunInit must clamp it (and any sidecars) to 0600
+	// so the README's "all files are mode 0600" promise holds out of the
+	// box, not just after the bot has run once.
+	dd, _, boot, _, _, deps := newHappyPathSetup(t)
+	boot.writeCryptoDB = true
+
+	if err := RunInit(context.Background(), dd, deps); err != nil {
+		t.Fatalf("RunInit: %v", err)
+	}
+
+	for _, p := range dd.CryptoDBPaths() {
+		info, err := os.Stat(p)
+		if err != nil {
+			t.Fatalf("stat %s: %v", p, err)
+		}
+		if got := info.Mode().Perm(); got != 0o600 {
+			t.Errorf("%s mode = %o, want 0600", p, got)
+		}
+	}
+}
+
+func TestRunInitTightensCryptoDBPermissionsOnHalfBootstrap(t *testing.T) {
+	// Half-bootstrap means Bootstrap returned a recovery key alongside
+	// an error — the SSSS key was minted but the UIA-gated upload failed.
+	// crypto.db is on disk regardless, so the chmod must still happen
+	// even though RunInit will return an error.
+	dd, _, boot, _, _, deps := newHappyPathSetup(t)
+	boot.writeCryptoDB = true
+	boot.recoveryKey = "EsTQ-half"
+	boot.err = errors.New("UIA upload failed")
+
+	err := RunInit(context.Background(), dd, deps)
+	if err == nil {
+		t.Fatal("want error, got nil")
+	}
+
+	for _, p := range dd.CryptoDBPaths() {
+		info, statErr := os.Stat(p)
+		if statErr != nil {
+			t.Fatalf("stat %s: %v", p, statErr)
+		}
+		if got := info.Mode().Perm(); got != 0o600 {
+			t.Errorf("%s mode = %o, want 0600", p, got)
 		}
 	}
 }
