@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"maunium.net/go/mautrix/id"
 )
 
 func TestConfigSaveAndLoadRoundTrip(t *testing.T) {
@@ -85,6 +87,78 @@ func TestLoadConfigMissingReturnsErrNotInitialized(t *testing.T) {
 	}
 	if !errors.Is(err, ErrNotInitialized) {
 		t.Errorf("err = %v, want ErrNotInitialized", err)
+	}
+}
+
+func TestRouteConfigBuildTriggerMention(t *testing.T) {
+	tr, err := (RouteConfig{Trigger: "mention", Handler: "llm"}).BuildTrigger(id.UserID("@bot:e"))
+	if err != nil {
+		t.Fatalf("BuildTrigger: %v", err)
+	}
+	mt, ok := tr.(MentionTrigger)
+	if !ok {
+		t.Fatalf("got %T, want MentionTrigger", tr)
+	}
+	if mt.BotUserID != "@bot:e" {
+		t.Errorf("BotUserID = %q, want @bot:e", mt.BotUserID)
+	}
+}
+
+func TestRouteConfigBuildTriggerCommandRequiresPrefix(t *testing.T) {
+	_, err := (RouteConfig{Trigger: "command"}).BuildTrigger(id.UserID("@bot:e"))
+	if err == nil {
+		t.Fatal("want error for missing prefix")
+	}
+	if !strings.Contains(err.Error(), "prefix") {
+		t.Errorf("err = %v, want prefix mention", err)
+	}
+}
+
+func TestRouteConfigBuildTriggerCommand(t *testing.T) {
+	tr, err := (RouteConfig{Trigger: "command", Prefix: "!tasks"}).BuildTrigger(id.UserID("@bot:e"))
+	if err != nil {
+		t.Fatalf("BuildTrigger: %v", err)
+	}
+	ct, ok := tr.(CommandTrigger)
+	if !ok {
+		t.Fatalf("got %T, want CommandTrigger", tr)
+	}
+	if ct.Prefix != "!tasks" || ct.BotUserID != "@bot:e" {
+		t.Errorf("ct = %+v, want prefix !tasks and bot @bot:e", ct)
+	}
+}
+
+func TestRouteConfigBuildTriggerReactionRequiresEmoji(t *testing.T) {
+	_, err := (RouteConfig{Trigger: "reaction"}).BuildTrigger(id.UserID("@bot:e"))
+	if err == nil {
+		t.Fatal("want error for missing emoji")
+	}
+	if !strings.Contains(err.Error(), "emoji") {
+		t.Errorf("err = %v, want emoji mention", err)
+	}
+}
+
+func TestRouteConfigBuildTriggerReaction(t *testing.T) {
+	tr, err := (RouteConfig{Trigger: "reaction", Emoji: "+1"}).BuildTrigger(id.UserID("@bot:e"))
+	if err != nil {
+		t.Fatalf("BuildTrigger: %v", err)
+	}
+	rt, ok := tr.(ReactionTrigger)
+	if !ok {
+		t.Fatalf("got %T, want ReactionTrigger", tr)
+	}
+	if rt.Emoji != "+1" || rt.BotUserID != "@bot:e" {
+		t.Errorf("rt = %+v, want emoji +1 and bot @bot:e", rt)
+	}
+}
+
+func TestRouteConfigBuildTriggerUnknownNamesTrigger(t *testing.T) {
+	_, err := (RouteConfig{Trigger: "telepathy"}).BuildTrigger(id.UserID("@bot:e"))
+	if err == nil {
+		t.Fatal("want error for unknown trigger")
+	}
+	if !strings.Contains(err.Error(), "telepathy") {
+		t.Errorf("err = %v, want trigger name", err)
 	}
 }
 

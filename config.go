@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+
+	"maunium.net/go/mautrix/id"
 )
 
 // ErrNotInitialized is returned when LoadConfig is called before
@@ -55,6 +57,27 @@ type RouteConfig struct {
 	// preserves the bytes verbatim across save/load and never inspects
 	// the contents.
 	Extensions json.RawMessage `json:"extensions,omitempty"`
+}
+
+// BuildTrigger turns this route's trigger fields into one of matrixbot's
+// built-in Trigger implementations.
+func (r RouteConfig) BuildTrigger(botUserID id.UserID) (Trigger, error) {
+	switch r.Trigger {
+	case "mention":
+		return MentionTrigger{BotUserID: botUserID}, nil
+	case "command":
+		if r.Prefix == "" {
+			return nil, fmt.Errorf("command trigger requires a non-empty prefix")
+		}
+		return CommandTrigger{Prefix: r.Prefix, BotUserID: botUserID}, nil
+	case "reaction":
+		if r.Emoji == "" {
+			return nil, fmt.Errorf("reaction trigger requires a non-empty emoji")
+		}
+		return ReactionTrigger{Emoji: r.Emoji, BotUserID: botUserID}, nil
+	default:
+		return nil, fmt.Errorf("unknown trigger kind %q", r.Trigger)
+	}
 }
 
 // LoadConfig reads config.json from dd. ErrNotInitialized wraps the
