@@ -72,27 +72,6 @@ func TestShouldHandleMentionUsesMentionsField(t *testing.T) {
 	}
 }
 
-func TestExtractMessageTextStripsBotMention(t *testing.T) {
-	got := extractMessageText(
-		&event.MessageEventContent{Body: "@bot:example what's the weather?"},
-		id.UserID("@bot:example"),
-	)
-	want := "what's the weather?"
-	if got != want {
-		t.Errorf("got %q, want %q", got, want)
-	}
-}
-
-func TestExtractMessageTextHandlesNoMention(t *testing.T) {
-	got := extractMessageText(
-		&event.MessageEventContent{Body: "hello"},
-		id.UserID("@bot:example"),
-	)
-	if got != "hello" {
-		t.Errorf("got %q", got)
-	}
-}
-
 func TestShouldHandleReactionAcceptsConfiguredEmoji(t *testing.T) {
 	got, parent := shouldHandleReaction(
 		&event.ReactionEventContent{RelatesTo: event.RelatesTo{
@@ -164,6 +143,73 @@ func TestMentionTriggerApplyMatchesAndStripsMention(t *testing.T) {
 	}
 }
 
+func TestMentionTriggerApplyStructuredMentionKeepsLocalpartSubstring(t *testing.T) {
+	mt := MentionTrigger{BotUserID: id.UserID("@bot:example")}
+	mec := &event.MessageEventContent{
+		Body:     "please ask @bot-admin to rotate the key",
+		Mentions: &event.Mentions{UserIDs: []id.UserID{"@bot:example"}},
+	}
+	evt := &event.Event{
+		RoomID:  id.RoomID("!room:example"),
+		Sender:  id.UserID("@user:example"),
+		Content: event.Content{Parsed: mec},
+	}
+	req, ok, err := mt.Apply(context.Background(), evt, nil)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected structured mention to match")
+	}
+	want := "please ask @bot-admin to rotate the key"
+	if req.Input != want {
+		t.Errorf("Input = %q, want %q", req.Input, want)
+	}
+}
+
+func TestMentionTriggerApplyBodyMentionStripsFullMXID(t *testing.T) {
+	mt := MentionTrigger{BotUserID: id.UserID("@bot:example")}
+	mec := &event.MessageEventContent{Body: "@bot:example, run diagnostics"}
+	evt := &event.Event{
+		RoomID:  id.RoomID("!room:example"),
+		Sender:  id.UserID("@user:example"),
+		Content: event.Content{Parsed: mec},
+	}
+	req, ok, err := mt.Apply(context.Background(), evt, nil)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected body mention to match")
+	}
+	if req.Input != "run diagnostics" {
+		t.Errorf("Input = %q", req.Input)
+	}
+}
+
+func TestMentionTriggerApplyStructuredMentionStripsFullMXID(t *testing.T) {
+	mt := MentionTrigger{BotUserID: id.UserID("@bot:example")}
+	mec := &event.MessageEventContent{
+		Body:     "@bot:example: check the audit log",
+		Mentions: &event.Mentions{UserIDs: []id.UserID{"@bot:example"}},
+	}
+	evt := &event.Event{
+		RoomID:  id.RoomID("!room:example"),
+		Sender:  id.UserID("@user:example"),
+		Content: event.Content{Parsed: mec},
+	}
+	req, ok, err := mt.Apply(context.Background(), evt, nil)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected structured mention to match")
+	}
+	if req.Input != "check the audit log" {
+		t.Errorf("Input = %q", req.Input)
+	}
+}
+
 func TestMentionTriggerApplySkipsEmptyAfterStripping(t *testing.T) {
 	mt := MentionTrigger{BotUserID: id.UserID("@bot:example")}
 	mec := &event.MessageEventContent{Body: "@bot:example"}
@@ -178,6 +224,26 @@ func TestMentionTriggerApplySkipsEmptyAfterStripping(t *testing.T) {
 	}
 	if ok {
 		t.Error("a bare mention with no payload must not match")
+	}
+}
+
+func TestMentionTriggerApplyStructuredMentionSkipsEmptyInput(t *testing.T) {
+	mt := MentionTrigger{BotUserID: id.UserID("@bot:example")}
+	mec := &event.MessageEventContent{
+		Body:     "  :;,-  ",
+		Mentions: &event.Mentions{UserIDs: []id.UserID{"@bot:example"}},
+	}
+	evt := &event.Event{
+		RoomID:  id.RoomID("!room:example"),
+		Sender:  id.UserID("@user:example"),
+		Content: event.Content{Parsed: mec},
+	}
+	_, ok, err := mt.Apply(context.Background(), evt, nil)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if ok {
+		t.Error("structured mention with empty text must not match")
 	}
 }
 

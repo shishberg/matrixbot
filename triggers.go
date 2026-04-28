@@ -9,43 +9,52 @@ import (
 )
 
 // shouldHandleMention returns true when the message is one we should reply
-// to: not from the bot itself, and either mentioning the bot by user ID in
-// the body or via the m.mentions list. Room scoping is the dispatcher's
-// responsibility, not the trigger's.
+// to: not from the bot itself, mentioning the bot by full user ID in the body
+// or via m.mentions, and leaving non-empty input. Room scoping is the
+// dispatcher's responsibility, not the trigger's.
 func shouldHandleMention(content *event.MessageEventContent, botUserID id.UserID, sender string) bool {
-	if content == nil {
-		return false
-	}
-	if sender == string(botUserID) {
-		return false
-	}
-	if content.Mentions != nil && content.Mentions.Has(botUserID) {
-		return true
-	}
-	// Plain-body fallback for clients that don't populate m.mentions: only
-	// match the full user ID. Matching the localpart alone (e.g. `@bot`)
-	// caused false positives — any chatter containing the substring (a quote,
-	// `@bot-admin`, etc.) tripped the bot.
-	return strings.Contains(content.Body, string(botUserID))
+	_, ok := mentionInput(content, botUserID, sender)
+	return ok
 }
 
-// extractMessageText pulls the user-facing question out of a mention by
-// stripping the leading `@bot` reference. Falls back to the raw body if no
-// reference is found.
-func extractMessageText(content *event.MessageEventContent, botUserID id.UserID) string {
+func mentionInput(content *event.MessageEventContent, botUserID id.UserID, sender string) (string, bool) {
 	if content == nil {
-		return ""
+		return "", false
 	}
+	if sender == string(botUserID) {
+		return "", false
+	}
+
 	body := content.Body
-	for _, needle := range []string{string(botUserID), localpart(string(botUserID))} {
-		if needle == "" {
-			continue
-		}
-		if idx := strings.Index(body, needle); idx >= 0 {
-			body = body[:idx] + body[idx+len(needle):]
-			break
-		}
+	if strings.Contains(body, string(botUserID)) {
+		return nonEmptyMentionInput(stripFullUserID(body, botUserID))
 	}
+	if content.Mentions != nil && content.Mentions.Has(botUserID) {
+		return nonEmptyMentionInput(body)
+	}
+	return "", false
+}
+
+func stripFullUserID(body string, botUserID id.UserID) string {
+	needle := string(botUserID)
+	if needle == "" {
+		return body
+	}
+	if idx := strings.Index(body, needle); idx >= 0 {
+		return body[:idx] + body[idx+len(needle):]
+	}
+	return body
+}
+
+func nonEmptyMentionInput(body string) (string, bool) {
+	input := trimMentionInput(body)
+	if input == "" {
+		return "", false
+	}
+	return input, true
+}
+
+func trimMentionInput(body string) string {
 	body = strings.TrimSpace(body)
 	body = strings.TrimLeft(body, ":,;- ")
 	return strings.TrimSpace(body)
@@ -69,18 +78,6 @@ func shouldHandleReaction(content *event.ReactionEventContent, sender string, bo
 		return false, ""
 	}
 	return true, content.RelatesTo.EventID
-}
-
-// localpart returns the `@name` portion of a Matrix user ID `@name:server`,
-// or empty if the input doesn't look like a user ID.
-func localpart(userID string) string {
-	if !strings.HasPrefix(userID, "@") {
-		return ""
-	}
-	if idx := strings.IndexByte(userID, ':'); idx > 1 {
-		return userID[:idx]
-	}
-	return ""
 }
 
 // parentEventBody pulls the plain-text body out of a fetched message event,
@@ -111,11 +108,8 @@ type MentionTrigger struct {
 
 func (m MentionTrigger) Apply(ctx context.Context, evt *event.Event, fetcher EventFetcher) (Request, bool, error) {
 	mec, _ := evt.Content.Parsed.(*event.MessageEventContent)
-	if !shouldHandleMention(mec, m.BotUserID, string(evt.Sender)) {
-		return Request{}, false, nil
-	}
-	text := extractMessageText(mec, m.BotUserID)
-	if text == "" {
+	text, ok := mentionInput(mec, m.BotUserID, string(evt.Sender))
+	if !ok {
 		return Request{}, false, nil
 	}
 	return Request{

@@ -219,7 +219,7 @@ interfaces.
 
 | Trigger            | Fires when                                                                          | `Request.Input`                          |
 |--------------------|-------------------------------------------------------------------------------------|------------------------------------------|
-| `MentionTrigger`   | message body or `m.mentions` references the full bot user ID, sender ≠ bot         | message body with the mention stripped   |
+| `MentionTrigger`   | message body or `m.mentions` references the full bot user ID, sender ≠ bot         | message body, with the full user ID stripped when present |
 | `CommandTrigger`   | trimmed body starts with `Prefix` followed by end-of-string or whitespace          | trimmed remainder after the prefix       |
 | `ReactionTrigger`  | reaction whose emoji equals `Emoji`, sender ≠ bot, parent fetched via `EventFetcher` | parent message body                      |
 
