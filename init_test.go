@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"maunium.net/go/mautrix"
+	"maunium.net/go/mautrix/crypto"
 	"maunium.net/go/mautrix/id"
 )
 
@@ -21,21 +22,23 @@ import (
 type fakeBootstrapper struct {
 	gotPickleKey  string
 	gotPassword   string
+	gotConfig     initBootstrapConfig
 	recoveryKey   string
 	err           error
 	calledOpenDir DataDir
 	writeCryptoDB bool
 }
 
-func (f *fakeBootstrapper) Bootstrap(ctx context.Context, dd DataDir, accessToken, deviceID, userID, homeserver, password, pickleKey string) (string, error) {
-	f.gotPickleKey = pickleKey
-	f.gotPassword = password
-	f.calledOpenDir = dd
+func (f *fakeBootstrapper) Bootstrap(ctx context.Context, cfg initBootstrapConfig) (string, error) {
+	f.gotConfig = cfg
+	f.gotPickleKey = cfg.PickleKey
+	f.gotPassword = cfg.Password
+	f.calledOpenDir = cfg.DataDir
 	if f.writeCryptoDB {
-		if err := os.MkdirAll(string(dd), 0o700); err != nil {
+		if err := os.MkdirAll(string(cfg.DataDir), 0o700); err != nil {
 			return f.recoveryKey, err
 		}
-		for _, p := range dd.CryptoDBPaths() {
+		for _, p := range cfg.DataDir.CryptoDBPaths() {
 			if err := os.WriteFile(p, []byte("fake"), 0o644); err != nil {
 				return f.recoveryKey, err
 			}
@@ -76,6 +79,9 @@ func newHappyPathSetup(t *testing.T) (DataDir, *fakeInitLoginClient, *fakeBootst
 		},
 	}
 	boot := &fakeBootstrapper{recoveryKey: "EsTQ-recovery"}
+	prevBootstrap := bootstrapCrossSigning
+	bootstrapCrossSigning = boot.Bootstrap
+	t.Cleanup(func() { bootstrapCrossSigning = prevBootstrap })
 	prompter := &cannedPrompter{
 		answers: map[string]string{
 			"homeserver":       "https://matrix.example",
@@ -92,12 +98,183 @@ func newHappyPathSetup(t *testing.T) (DataDir, *fakeInitLoginClient, *fakeBootst
 			}
 			return login, nil
 		},
-		Bootstrap: boot.Bootstrap,
-		Env:       initEnv{},
-		Prompter:  prompter,
-		Stdout:    out,
+		Env:      initEnv{},
+		Prompter: prompter,
+		Stdout:   out,
 	}
 	return dir, login, boot, prompter, out, deps
+}
+
+func TestRunInitUsesDefaultBootstrapWhenDepsOmitBootstrap(t *testing.T) {
+	dd := DataDir(t.TempDir() + "/.matrixbot")
+	login := &fakeInitLoginClient{
+		resp: &mautrix.RespLogin{
+			AccessToken: "syt_secret",
+			DeviceID:    id.DeviceID("FRESHID"),
+			UserID:      id.UserID("@bot:example"),
+		},
+	}
+	prompter := &cannedPrompter{
+		answers: map[string]string{
+			"homeserver":       "https://matrix.example",
+			"bot user ID":      "@bot:example",
+			"bot password":     "hunter2",
+			"operator user ID": "@dave:example",
+		},
+	}
+	deps := InitDeps{
+		LoginFactory: func(homeserver string) (LoginClient, error) {
+			if homeserver != "https://matrix.example" {
+				t.Errorf("LoginFactory homeserver = %q", homeserver)
+			}
+			return login, nil
+		},
+		Env:      initEnv{},
+		Prompter: prompter,
+		Stdout:   &bytes.Buffer{},
+	}
+
+	helper := &fakeInitBootstrapHelper{}
+	prevBootstrap := bootstrapCrossSigning
+	bootstrapCrossSigning = realBootstrapCrossSigning
+	prevNewHelper := newInitCryptoHelper
+	newInitCryptoHelper = func(client *mautrix.Client, pickleKey []byte, storePath string) (initCryptoHelper, error) {
+		if client.HomeserverURL.String() != "https://matrix.example" {
+			t.Errorf("client homeserver = %q", client.HomeserverURL.String())
+		}
+		if client.UserID != id.UserID("@bot:example") {
+			t.Errorf("client user ID = %q", client.UserID)
+		}
+		if client.AccessToken != "syt_secret" {
+			t.Errorf("client access token = %q", client.AccessToken)
+		}
+		if client.DeviceID != id.DeviceID("FRESHID") {
+			t.Errorf("client device ID = %q", client.DeviceID)
+		}
+		if len(pickleKey) == 0 {
+			t.Error("pickle key is empty")
+		}
+		if storePath != dd.CryptoDBPath() {
+			t.Errorf("store path = %q, want %q", storePath, dd.CryptoDBPath())
+		}
+		return helper, nil
+	}
+	prevBootstrapMachine := bootstrapOlmMachine
+	bootstrapOlmMachine = func(ctx context.Context, mach *crypto.OlmMachine, password, recoveryKey string) (string, error) {
+		if password != "hunter2" {
+			t.Errorf("password = %q", password)
+		}
+		if recoveryKey != "" {
+			t.Errorf("recoveryKey = %q, want empty", recoveryKey)
+		}
+		return "EsTQ-recovery", nil
+	}
+	t.Cleanup(func() {
+		bootstrapCrossSigning = prevBootstrap
+		newInitCryptoHelper = prevNewHelper
+		bootstrapOlmMachine = prevBootstrapMachine
+	})
+
+	if err := RunInit(context.Background(), dd, deps); err != nil {
+		t.Fatalf("RunInit: %v", err)
+	}
+
+	acct, err := LoadAccount(dd)
+	if err != nil {
+		t.Fatalf("LoadAccount: %v", err)
+	}
+	if acct.RecoveryKey != "EsTQ-recovery" {
+		t.Errorf("RecoveryKey = %q", acct.RecoveryKey)
+	}
+	if acct.PickleKey == "" {
+		t.Error("PickleKey is empty")
+	}
+	if !helper.initCalled {
+		t.Error("default bootstrap did not initialise crypto helper")
+	}
+	if !helper.closeCalled {
+		t.Error("default bootstrap did not close crypto helper")
+	}
+}
+
+type fakeInitBootstrapHelper struct {
+	initCalled  bool
+	closeCalled bool
+	closeErr    error
+}
+
+func (f *fakeInitBootstrapHelper) Init(ctx context.Context) error {
+	f.initCalled = true
+	return nil
+}
+
+func (f *fakeInitBootstrapHelper) Close() error {
+	f.closeCalled = true
+	return f.closeErr
+}
+
+func (f *fakeInitBootstrapHelper) Machine() *crypto.OlmMachine { return nil }
+
+func TestDefaultBootstrapIgnoresCloseErrors(t *testing.T) {
+	helper := &fakeInitBootstrapHelper{closeErr: errors.New("close failed")}
+	prevNewHelper := newInitCryptoHelper
+	newInitCryptoHelper = func(client *mautrix.Client, pickleKey []byte, storePath string) (initCryptoHelper, error) {
+		if client.HomeserverURL.String() != "https://matrix.example" {
+			t.Errorf("client homeserver = %q", client.HomeserverURL.String())
+		}
+		if client.UserID != id.UserID("@bot:example") {
+			t.Errorf("client user ID = %q", client.UserID)
+		}
+		if client.AccessToken != "syt_secret" {
+			t.Errorf("client access token = %q", client.AccessToken)
+		}
+		if client.DeviceID != id.DeviceID("FRESHID") {
+			t.Errorf("client device ID = %q", client.DeviceID)
+		}
+		if string(pickleKey) != "pickle" {
+			t.Errorf("pickle key = %q", string(pickleKey))
+		}
+		if !strings.HasSuffix(storePath, "crypto.db") {
+			t.Errorf("store path = %q", storePath)
+		}
+		return helper, nil
+	}
+	prevBootstrapMachine := bootstrapOlmMachine
+	bootstrapOlmMachine = func(ctx context.Context, mach *crypto.OlmMachine, password, recoveryKey string) (string, error) {
+		if password != "hunter2" {
+			t.Errorf("password = %q", password)
+		}
+		if recoveryKey != "" {
+			t.Errorf("recoveryKey = %q, want empty", recoveryKey)
+		}
+		return "EsTQ-recovery", nil
+	}
+	t.Cleanup(func() {
+		newInitCryptoHelper = prevNewHelper
+		bootstrapOlmMachine = prevBootstrapMachine
+	})
+
+	rk, err := realBootstrapCrossSigning(context.Background(), initBootstrapConfig{
+		DataDir:     DataDir(t.TempDir() + "/.matrixbot"),
+		AccessToken: "syt_secret",
+		DeviceID:    "FRESHID",
+		UserID:      "@bot:example",
+		Homeserver:  "https://matrix.example",
+		Password:    "hunter2",
+		PickleKey:   "pickle",
+	})
+	if err != nil {
+		t.Fatalf("realBootstrapCrossSigning returned close error: %v", err)
+	}
+	if rk != "EsTQ-recovery" {
+		t.Errorf("recovery key = %q", rk)
+	}
+	if !helper.initCalled {
+		t.Error("helper.Init was not called")
+	}
+	if !helper.closeCalled {
+		t.Error("helper.Close was not called")
+	}
 }
 
 func TestRunInitHappyPathWritesAllThreeFiles(t *testing.T) {
@@ -197,13 +374,15 @@ func TestRunInitEnvDefaultsSkipPrompts(t *testing.T) {
 		resp: &mautrix.RespLogin{AccessToken: "tok", DeviceID: id.DeviceID("D")},
 	}
 	boot := &fakeBootstrapper{recoveryKey: "rk"}
+	prevBootstrap := bootstrapCrossSigning
+	bootstrapCrossSigning = boot.Bootstrap
+	t.Cleanup(func() { bootstrapCrossSigning = prevBootstrap })
 	// Empty answers map — if anything actually prompts (i.e. Prompter is
 	// called for a label not pre-seeded), the call returns "" and we'd
 	// fail to write a usable config below.
 	prompter := &cannedPrompter{}
 	deps := InitDeps{
 		LoginFactory: func(string) (LoginClient, error) { return login, nil },
-		Bootstrap:    boot.Bootstrap,
 		Env: initEnv{
 			"MATRIX_HOMESERVER":       "https://matrix.example",
 			"MATRIX_USER_ID":          "@bot:example",

@@ -35,10 +35,9 @@ Concretely, the package gives you:
   atomic (write-then-rename).
 - An interactive `RunInit(ctx, dd, deps)` flow that prompts for
   homeserver / user ID / password / operator user ID, calls `/login`,
-  mints a fresh cross-signing identity via the host-supplied
-  `Bootstrapper`, and persists the resulting recovery key to
-  `account.json`. The recovery key is never logged or printed —
-  `account.json` is the only copy.
+  mints a fresh cross-signing identity, and persists the resulting
+  recovery key to `account.json`. The recovery key is never logged or
+  printed — `account.json` is the only copy.
 - `RunLogin(ctx, dd, deps)` to rotate the access token using the
   homeserver and user ID already in `config.json`.
 - `RunLogout(ctx, dd, deps)` to invalidate the server-side session and
@@ -48,9 +47,10 @@ Concretely, the package gives you:
   (`EnvLookupFunc(os.Getenv)`) so tests can hand in a map and
   production can hand in `os.Getenv`.
 - A `e2ee` subpackage with `Bootstrap` (cross-signing init/import) and
-  `NewVerifier` (SAS verification). `Bot.Run` already wires both when
-  the bot has crypto enabled; the subpackage is exported for hosts
-  that need to call `Bootstrap` directly during `init`.
+  `NewVerifier` (SAS verification). `RunInit` handles first-run
+  bootstrap, and `Bot.Run` wires steady-state import plus verification
+  when the bot has crypto enabled. The subpackage is exported for hosts
+  with unusual crypto flows.
 
 ## What this isn't
 
@@ -267,18 +267,16 @@ themselves. Handlers that need richer event context
   else, and logs the emoji/decimal SAS for the operator to compare.
   Empty operator returns nil so callers can wire it unconditionally.
 
-`Bot.Run` already calls both during steady-state startup; the
-subpackage is exported because `RunInit`'s `Bootstrapper` callback
-needs to call `Bootstrap` itself with the freshly-prompted password to
-mint the first-run recovery key.
+`RunInit` mints the first-run cross-signing identity, and `Bot.Run`
+imports it during steady-state startup. Hosts only need this subpackage
+when they have crypto flows outside the standard init/run lifecycle.
 
 `Bootstrap`'s return contract has one footgun worth flagging: on the
 first-run path it may return a non-empty recovery key alongside a
 non-nil error. mautrix mints the SSSS key first and only later does
 the UIA-gated upload, so a 401 leaves the caller with a
 half-bootstrapped account whose only re-entry point is that recovery
-key. Callers MUST persist the recovery key whenever it is non-empty,
-even when err is also non-nil.
+key. `RunInit` handles that persistence before returning the error.
 
 ## Build tags: `goolm` vs default (libolm)
 
@@ -311,15 +309,8 @@ real implementations and tests can plug in fakes:
 |---------------------------------------------------------------|------------|----------------------------------------------------------------------------------------------------|
 | `LoginClientFactory func(homeserverURL string) (LoginClient, error)`                | init+login | Build a `mautrix.NewClient` and return it; only `Login(ctx, *ReqLogin)` is called.                 |
 | `LogoutClientFactory func(homeserverURL, accessToken string) (LogoutClient, error)` | logout     | Build a `mautrix.NewClient` with the token set; only `Logout(ctx)` is called.                      |
-| `Bootstrapper`                                                | init       | Open `crypto.db` with the pickle key, run mautrix `cryptohelper.Init` then `e2ee.Bootstrap`, return the recovery key. |
 | `Prompter`                                                    | init+login | `NewStdioPrompter(os.Stdin, os.Stdout)`.                                                           |
 | `EnvLookup`                                                   | init       | `EnvLookupFunc(os.Getenv)`.                                                                        |
-
-The `Bootstrapper` contract has the same footgun as `e2ee.Bootstrap`
-itself: implementations MUST return whatever recovery key got minted,
-even when they also return a non-nil error. `RunInit` is the consumer
-of this contract — it persists whatever recovery key the
-`Bootstrapper` returns before propagating the bootstrap error.
 
 `InitDeps`, `LoginDeps`, and `LogoutDeps` each carry a `ProgramName`
 field. Operator-facing messages substitute it in (e.g. `"run 'mybot
@@ -344,10 +335,7 @@ import (
 	"syscall"
 
 	"github.com/shishberg/matrixbot"
-	"github.com/shishberg/matrixbot/e2ee"
 	"maunium.net/go/mautrix"
-	"maunium.net/go/mautrix/crypto/cryptohelper"
-	"maunium.net/go/mautrix/id"
 )
 
 func main() {
@@ -381,37 +369,11 @@ func main() {
 		return c, nil
 	}
 
-	// Declaring bootstrap with the matrixbot.Bootstrapper type means the
-	// example tracks whatever signature the package currently exposes
-	// rather than carrying a stale inline copy.
-	var bootstrap matrixbot.Bootstrapper = func(
-		ctx context.Context,
-		dd matrixbot.DataDir,
-		accessToken, deviceID, userID, homeserver, password, pickleKey string,
-	) (string, error) {
-		client, err := mautrix.NewClient(homeserver, id.UserID(userID), accessToken)
-		if err != nil {
-			return "", err
-		}
-		client.DeviceID = id.DeviceID(deviceID)
-		helper, err := cryptohelper.NewCryptoHelper(client, []byte(pickleKey), dd.CryptoDBPath())
-		if err != nil {
-			return "", err
-		}
-		if err := helper.Init(ctx); err != nil {
-			return "", err
-		}
-		defer helper.Close()
-		client.Crypto = helper
-		return e2ee.Bootstrap(ctx, helper.Machine(), password, "")
-	}
-
 	cmd := argOrEmpty(os.Args, 1)
 	switch cmd {
 	case "init":
 		err = matrixbot.RunInit(ctx, dd, matrixbot.InitDeps{
 			LoginFactory: loginFactory,
-			Bootstrap:    bootstrap,
 			Env:          matrixbot.EnvLookupFunc(os.Getenv),
 			Prompter:     prompter,
 			Stdout:       os.Stdout,

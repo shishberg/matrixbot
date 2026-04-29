@@ -10,7 +10,11 @@ import (
 	"log/slog"
 	"os"
 
+	"github.com/shishberg/matrixbot/e2ee"
 	"maunium.net/go/mautrix"
+	"maunium.net/go/mautrix/crypto"
+	"maunium.net/go/mautrix/crypto/cryptohelper"
+	"maunium.net/go/mautrix/id"
 )
 
 // LoginClient is the slice of mautrix.Client init / login need. Tests
@@ -22,15 +26,6 @@ type LoginClient interface {
 // LoginClientFactory builds a LoginClient pointed at the given homeserver
 // URL.
 type LoginClientFactory func(homeserverURL string) (LoginClient, error)
-
-// Bootstrapper mints the cross-signing identity. The real implementation
-// (in the host program, since it pulls in mautrix's cryptohelper) opens
-// crypto.db with pickleKey, calls helper.Init, then calls e2ee.Bootstrap.
-// The test fake just returns a canned key without touching olm/sqlite.
-//
-// Returns the fresh recovery key (which the caller MUST persist even if
-// err is non-nil — see RunInit's half-bootstrap handling).
-type Bootstrapper func(ctx context.Context, dd DataDir, accessToken, deviceID, userID, homeserver, password, pickleKey string) (recoveryKey string, err error)
 
 // EnvLookup is what InitDeps uses to read backwards-compat seed env vars
 // when filling in prompt defaults. The test injects a map; production
@@ -50,7 +45,6 @@ func (f EnvLookupFunc) Get(key string) string { return f(key) }
 // implementations; tests inject fakes.
 type InitDeps struct {
 	LoginFactory LoginClientFactory
-	Bootstrap    Bootstrapper
 	Env          EnvLookup
 	Prompter     Prompter
 	Stdout       io.Writer
@@ -66,6 +60,30 @@ func (d InitDeps) program() string {
 	}
 	return d.ProgramName
 }
+
+type initBootstrapConfig struct {
+	DataDir     DataDir
+	AccessToken string
+	DeviceID    string
+	UserID      string
+	Homeserver  string
+	Password    string
+	PickleKey   string
+}
+
+type initCryptoHelper interface {
+	Init(context.Context) error
+	Close() error
+	Machine() *crypto.OlmMachine
+}
+
+var (
+	bootstrapCrossSigning = realBootstrapCrossSigning
+	newInitCryptoHelper   = func(client *mautrix.Client, pickleKey []byte, storePath string) (initCryptoHelper, error) {
+		return cryptohelper.NewCryptoHelper(client, pickleKey, storePath)
+	}
+	bootstrapOlmMachine = e2ee.Bootstrap
+)
 
 // RunInit drives the interactive setup. It writes config.json,
 // session.json and account.json under dd, in that order, then prints a
@@ -134,7 +152,15 @@ func RunInit(ctx context.Context, dd DataDir, deps InitDeps) error {
 		return err
 	}
 
-	recoveryKey, bootErr := deps.Bootstrap(ctx, dd, session.AccessToken, session.DeviceID, cfg.UserID, cfg.Homeserver, password, pickleKey)
+	recoveryKey, bootErr := bootstrapCrossSigning(ctx, initBootstrapConfig{
+		DataDir:     dd,
+		AccessToken: session.AccessToken,
+		DeviceID:    session.DeviceID,
+		UserID:      cfg.UserID,
+		Homeserver:  cfg.Homeserver,
+		Password:    password,
+		PickleKey:   pickleKey,
+	})
 
 	// Bootstrap opens crypto.db with the process umask (typically 0644),
 	// so clamp it down to match the rest of the data dir. Run on the
@@ -165,6 +191,29 @@ func RunInit(ctx context.Context, dd DataDir, deps InitDeps) error {
 
 	fmt.Fprintf(deps.Stdout, "Initialized %s. Run '%s' to start.\n", string(dd), deps.program())
 	return nil
+}
+
+func realBootstrapCrossSigning(ctx context.Context, cfg initBootstrapConfig) (string, error) {
+	client, err := mautrix.NewClient(cfg.Homeserver, id.UserID(cfg.UserID), cfg.AccessToken)
+	if err != nil {
+		return "", fmt.Errorf("matrix client: %w", err)
+	}
+	client.DeviceID = id.DeviceID(cfg.DeviceID)
+
+	helper, err := newInitCryptoHelper(client, []byte(cfg.PickleKey), cfg.DataDir.CryptoDBPath())
+	if err != nil {
+		return "", fmt.Errorf("creating crypto helper: %w", err)
+	}
+	defer func() {
+		if err := helper.Close(); err != nil {
+			slog.Warn("matrixbot: closing init crypto helper", "err", err)
+		}
+	}()
+	if err := helper.Init(ctx); err != nil {
+		return "", fmt.Errorf("initialising crypto helper: %w", err)
+	}
+
+	return bootstrapOlmMachine(ctx, helper.Machine(), cfg.Password, "")
 }
 
 // promptConfig drives the prompter, seeding answers from env where
