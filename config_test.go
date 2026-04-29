@@ -228,6 +228,28 @@ func TestLoadConfigRejectsLegacyRoomIDField(t *testing.T) {
 	}
 }
 
+func TestLoadConfigPrioritizesLegacyRoomIDOverUnknownTopLevelFields(t *testing.T) {
+	dir := t.TempDir()
+	dd := DataDir(dir)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	raw := []byte(`{"homeserver":"h","user_id":"u","room_id":"!old:e","mopoke_workspace":"legacy"}`)
+	if err := os.WriteFile(dd.ConfigPath(), raw, 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	_, err := LoadConfig(dd)
+	if err == nil {
+		t.Fatal("want error, got nil")
+	}
+	if !strings.Contains(err.Error(), "schema changed") {
+		t.Errorf("err should mention schema migration, got %q", err)
+	}
+	if strings.Contains(err.Error(), "mopoke_workspace") {
+		t.Errorf("err should prioritize legacy schema guidance, got %q", err)
+	}
+}
+
 func TestConfigRoomExtensionsRoundTrip(t *testing.T) {
 	// Room.Extensions is an opaque blob; matrixbot must preserve byte-for-byte
 	// what the host wrote, and the on-disk JSON key must be the neutral
@@ -289,6 +311,68 @@ func TestLoadConfigRejectsTopLevelExtensions(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "room") {
 		t.Errorf("err should suggest moving under each room, got %q", err)
+	}
+}
+
+func TestLoadConfigRejectsUnknownTopLevelField(t *testing.T) {
+	dir := t.TempDir()
+	dd := DataDir(dir)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	raw := []byte(`{"homeserver":"h","user_id":"u","typo":true}`)
+	if err := os.WriteFile(dd.ConfigPath(), raw, 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	_, err := LoadConfig(dd)
+	if err == nil {
+		t.Fatal("want error, got nil")
+	}
+	if !strings.Contains(err.Error(), "typo") {
+		t.Errorf("err should name unknown field, got %q", err)
+	}
+}
+
+func TestLoadConfigRejectsUnknownRoomField(t *testing.T) {
+	dir := t.TempDir()
+	dd := DataDir(dir)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	raw := []byte(`{"homeserver":"h","user_id":"u","rooms":{"!a:e":{"extension":{}}}}`)
+	if err := os.WriteFile(dd.ConfigPath(), raw, 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	_, err := LoadConfig(dd)
+	if err == nil {
+		t.Fatal("want error, got nil")
+	}
+	if !strings.Contains(err.Error(), "!a:e") {
+		t.Errorf("err should name room ID, got %q", err)
+	}
+	if !strings.Contains(err.Error(), "extension") {
+		t.Errorf("err should name unknown field, got %q", err)
+	}
+}
+
+func TestLoadConfigRejectsUnknownRouteField(t *testing.T) {
+	dir := t.TempDir()
+	dd := DataDir(dir)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	raw := []byte(`{"homeserver":"h","user_id":"u","rooms":{"!a:e":{"routes":[{"trigger":"command","handler":"alpha_list","prefix":"!do","prefx":"!no"}]}}}`)
+	if err := os.WriteFile(dd.ConfigPath(), raw, 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	_, err := LoadConfig(dd)
+	if err == nil {
+		t.Fatal("want error, got nil")
+	}
+	for _, want := range []string{"!a:e", "[0]", "prefx"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("err should contain %q, got %q", want, err)
+		}
 	}
 }
 
@@ -359,13 +443,7 @@ func TestRouteConfigPreservesExtensionsBytes(t *testing.T) {
 	}
 }
 
-func TestRouteConfigIgnoresUnknownJSONFields(t *testing.T) {
-	// json.Unmarshal of unknown fields is permissive by default. That's
-	// load-bearing for the D1 transition: bilby's existing on-disk config
-	// has a top-level "limit" on one route, and after dropping the typed
-	// Limit field we want that key to be silently ignored rather than
-	// fail the load. Pin the behaviour so a future switch to
-	// DisallowUnknownFields can't regress it without us noticing.
+func TestLoadConfigRejectsLegacyRouteLimit(t *testing.T) {
 	dir := t.TempDir()
 	dd := DataDir(dir)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -375,12 +453,14 @@ func TestRouteConfigIgnoresUnknownJSONFields(t *testing.T) {
 	if err := os.WriteFile(dd.ConfigPath(), raw, 0o600); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	got, err := LoadConfig(dd)
-	if err != nil {
-		t.Fatalf("LoadConfig: %v", err)
+	_, err := LoadConfig(dd)
+	if err == nil {
+		t.Fatal("want error, got nil")
 	}
-	if r := got.Rooms["!a:e"].Routes[0]; r.Prefix != "!do" || r.Handler != "alpha_list" {
-		t.Errorf("legacy route load lost data: %+v", r)
+	for _, want := range []string{"!a:e", "[0]", "limit", "extensions.limit"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("err should contain %q, got %q", want, err)
+		}
 	}
 }
 

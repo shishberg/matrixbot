@@ -91,23 +91,7 @@ func LoadConfig(dd DataDir) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	// Top-level keys from matrixbot's earlier single-room schema. Each one
-	// here means the operator's config predates the per-room rooms map and
-	// can't be silently migrated, because the new schema needs information
-	// (which routes belong in which room) the old file doesn't carry.
-	for _, k := range []string{"room_id", "target_room_id"} {
-		if _, ok := raw[k]; ok {
-			return Config{}, fmt.Errorf("config schema changed; please reinitialize this data directory and re-add your rooms by hand-editing %s", path)
-		}
-	}
-	// A top-level "extensions" block was the v1 home for global handler
-	// credentials. The current model puts one extensions block per room, so
-	// a top-level block would be silently ignored — and the operator would
-	// run with handlers that have no credentials. Surface it instead.
-	if _, ok := raw["extensions"]; ok {
-		return Config{}, fmt.Errorf("top-level \"extensions\" is no longer supported; move it under each room as rooms.<room_id>.extensions in %s", path)
-	}
-	if err := rejectLegacyRouteConfig(raw, path); err != nil {
+	if err := validateConfigSchema(raw, path); err != nil {
 		return Config{}, err
 	}
 	var c Config
@@ -117,37 +101,88 @@ func LoadConfig(dd DataDir) (Config, error) {
 	return c, nil
 }
 
-// rejectLegacyRouteConfig walks the rooms map looking for routes that
-// still carry an inline "config" object. That field used to hold per-route
-// handler credentials; those credentials now belong under
-// rooms.<room_id>.extensions, so leaving them on the route silently
-// disables them. We refuse rather than guess where to move the data.
-func rejectLegacyRouteConfig(raw map[string]json.RawMessage, path string) error {
+func validateConfigSchema(raw map[string]json.RawMessage, path string) error {
+	for _, key := range []string{"room_id", "target_room_id", "extensions"} {
+		if _, ok := raw[key]; ok {
+			return validateTopLevelConfigKey(key, path)
+		}
+	}
+	for key := range raw {
+		if err := validateTopLevelConfigKey(key, path); err != nil {
+			return err
+		}
+	}
 	roomsRaw, ok := raw["rooms"]
 	if !ok {
 		return nil
 	}
-	var rooms map[string]struct {
-		Routes []map[string]json.RawMessage `json:"routes"`
-	}
+	var rooms map[string]map[string]json.RawMessage
 	if err := json.Unmarshal(roomsRaw, &rooms); err != nil {
 		// A malformed rooms map (not a JSON object, e.g.) is left for the
 		// typed decode below to report — it produces a cleaner message
-		// than we could here. Side-effect: if the operator's config has
-		// both a malformed rooms map AND legacy per-route "config" fields,
-		// only the malformed-rooms error fires; they'll see the legacy
-		// migration error on their second load attempt, after fixing the
-		// map. Acceptable because both are operator-side errors anyway.
+		// than a schema preflight can.
 		return nil
 	}
-	for roomID, room := range rooms {
-		for i, route := range room.Routes {
+	for roomID, roomRaw := range rooms {
+		for key := range roomRaw {
+			if !isAllowedRoomConfigKey(key) {
+				return fmt.Errorf("unknown config field rooms[%q].%s in %s", roomID, key, path)
+			}
+		}
+		routesRaw, ok := roomRaw["routes"]
+		if !ok {
+			continue
+		}
+		var routes []map[string]json.RawMessage
+		if err := json.Unmarshal(routesRaw, &routes); err != nil {
+			return nil
+		}
+		for i, route := range routes {
 			if _, ok := route["config"]; ok {
-				return fmt.Errorf("route %s[%d] has a per-route \"config\" field; move handler credentials into rooms.%s.extensions in %s", roomID, i, roomID, path)
+				return fmt.Errorf("route rooms[%q].routes[%d] has a per-route \"config\" field; move handler credentials into rooms[%q].extensions in %s", roomID, i, roomID, path)
+			}
+			if _, ok := route["limit"]; ok {
+				return fmt.Errorf("route rooms[%q].routes[%d] has a legacy \"limit\" field; move it to rooms[%q].routes[%d].extensions.limit in %s", roomID, i, roomID, i, path)
+			}
+			for key := range route {
+				if !isAllowedRouteConfigKey(key) {
+					return fmt.Errorf("unknown config field rooms[%q].routes[%d].%s in %s", roomID, i, key, path)
+				}
 			}
 		}
 	}
 	return nil
+}
+
+func validateTopLevelConfigKey(key, path string) error {
+	switch key {
+	case "homeserver", "user_id", "operator_user_id", "auto_join_rooms", "rooms":
+		return nil
+	case "room_id", "target_room_id":
+		return fmt.Errorf("config schema changed; please reinitialize this data directory and re-add your rooms by hand-editing %s", path)
+	case "extensions":
+		return fmt.Errorf("top-level \"extensions\" is no longer supported; move it under each room as rooms.<room_id>.extensions in %s", path)
+	default:
+		return fmt.Errorf("unknown config field %q in %s", key, path)
+	}
+}
+
+func isAllowedRoomConfigKey(key string) bool {
+	switch key {
+	case "extensions", "routes":
+		return true
+	default:
+		return false
+	}
+}
+
+func isAllowedRouteConfigKey(key string) bool {
+	switch key {
+	case "trigger", "handler", "prefix", "emoji", "extensions":
+		return true
+	default:
+		return false
+	}
 }
 
 // readRawConfig reads config.json into a permissive map, preserving
