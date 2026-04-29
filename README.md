@@ -217,11 +217,11 @@ interfaces.
 
 ### Triggers
 
-| Trigger            | Fires when                                                                          | `Request.Input`                          |
-|--------------------|-------------------------------------------------------------------------------------|------------------------------------------|
-| `MentionTrigger`   | message body or `m.mentions` references the full bot user ID, sender ≠ bot         | message body, with the full user ID stripped when present |
-| `CommandTrigger`   | trimmed body starts with `Prefix` followed by end-of-string or whitespace          | trimmed remainder after the prefix       |
-| `ReactionTrigger`  | reaction whose emoji equals `Emoji`, sender ≠ bot, parent fetched via `EventFetcher` | parent message body                      |
+| Trigger            | Fires when                                                                          | `Request.Input`                          | `Request.ParentEventID` |
+|--------------------|-------------------------------------------------------------------------------------|------------------------------------------|-------------------------|
+| `MentionTrigger`   | message body or `m.mentions` references the full bot user ID, sender ≠ bot         | message body, with the full user ID stripped when present | empty |
+| `CommandTrigger`   | trimmed body starts with `Prefix` followed by end-of-string or whitespace          | trimmed remainder after the prefix       | empty |
+| `ReactionTrigger`  | reaction whose emoji equals `Emoji`, sender ≠ bot, parent fetched via `EventFetcher` | parent message body                      | reacted-to event ID |
 
 `MentionTrigger` deliberately ignores the localpart (`@name` without
 `:server`) because that pattern false-matches on quotes and on user
@@ -243,8 +243,11 @@ func (echoHandler) Handle(ctx context.Context, req matrixbot.Request) (matrixbot
 bot.RouteIn(roomID, matrixbot.CommandTrigger{Prefix: "!echo"}, echoHandler{})
 ```
 
-`Request` carries `EventID`, `RoomID`, `Sender`, and the
-trigger-extracted `Input`. Handlers that need richer event context
+`Request` carries `EventID`, `RoomID`, `Sender`, the
+trigger-extracted `Input`, and `ParentEventID`. The built-in
+`ReactionTrigger` sets `ParentEventID` to the reacted-to event ID;
+mention, command, and custom triggers leave it empty unless they fill it
+themselves. Handlers that need richer event context
 (unparsed content, formatted body, etc.) should write a custom
 `Trigger` that pulls those fields onto `Request.Input` (or extend
 `Request` upstream — the struct lives in this package).

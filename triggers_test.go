@@ -141,6 +141,9 @@ func TestMentionTriggerApplyMatchesAndStripsMention(t *testing.T) {
 	if req.EventID != id.EventID("$e1") {
 		t.Errorf("EventID = %q", req.EventID)
 	}
+	if req.ParentEventID != "" {
+		t.Errorf("ParentEventID = %q, want empty", req.ParentEventID)
+	}
 }
 
 func TestMentionTriggerApplyStructuredMentionKeepsLocalpartSubstring(t *testing.T) {
@@ -283,6 +286,9 @@ func TestCommandTriggerMatchesPrefixWithArgs(t *testing.T) {
 	if req.Input != "recent" {
 		t.Errorf("Input = %q", req.Input)
 	}
+	if req.ParentEventID != "" {
+		t.Errorf("ParentEventID = %q, want empty", req.ParentEventID)
+	}
 }
 
 func TestCommandTriggerRejectsPrefixSubstring(t *testing.T) {
@@ -351,6 +357,9 @@ func TestReactionTriggerFetchesParentBody(t *testing.T) {
 	}
 	if req.Input != "the parent text" {
 		t.Errorf("Input = %q", req.Input)
+	}
+	if req.ParentEventID != id.EventID("$parent") {
+		t.Errorf("ParentEventID = %q, want %q", req.ParentEventID, id.EventID("$parent"))
 	}
 }
 
@@ -424,6 +433,9 @@ func TestReactionTriggerWithDecryptingFetcherReadsEncryptedParent(t *testing.T) 
 	}
 	if req.Input != "the parent text" {
 		t.Errorf("Input = %q, want %q", req.Input, "the parent text")
+	}
+	if req.ParentEventID != id.EventID("$parent") {
+		t.Errorf("ParentEventID = %q, want %q", req.ParentEventID, id.EventID("$parent"))
 	}
 }
 

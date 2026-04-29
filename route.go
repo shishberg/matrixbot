@@ -10,11 +10,15 @@ import (
 // Request is the trigger-extracted view of a Matrix event passed to a Handler.
 // Input is whatever payload the trigger pulled out — for a mention it's the
 // text after stripping `@bot`; for a reaction it's the parent message body.
+// The built-in ReactionTrigger sets ParentEventID to the reacted-to event ID;
+// other triggers leave it empty unless they explicitly populate it.
 type Request struct {
 	EventID id.EventID
 	RoomID  id.RoomID
 	Sender  id.UserID
 	Input   string
+
+	ParentEventID id.EventID
 }
 
 // Response is what a Handler returns. An empty Reply means "stay quiet".

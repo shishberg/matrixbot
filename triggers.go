@@ -186,9 +186,10 @@ func (r ReactionTrigger) Apply(ctx context.Context, evt *event.Event, fetcher Ev
 		return Request{}, false, nil
 	}
 	return Request{
-		EventID: evt.ID,
-		RoomID:  evt.RoomID,
-		Sender:  evt.Sender,
-		Input:   body,
+		EventID:       evt.ID,
+		ParentEventID: parentID,
+		RoomID:        evt.RoomID,
+		Sender:        evt.Sender,
+		Input:         body,
 	}, true, nil
 }
