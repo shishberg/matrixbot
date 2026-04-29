@@ -54,10 +54,8 @@ func (s *ScheduleTrigger) NextFire(after time.Time) time.Time {
 	return s.Schedule.Next(after)
 }
 
-// scheduleID hashes room+cron+input into a stable key for schedule.json.
-// Two routes registered with identical configuration in the same room
-// share an ID and a single persisted next-fire time — they fire once per
-// tick, not once per duplicate registration.
+// scheduleID returns a stable hex digest of (roomID, cron, input) for
+// use as a schedule.json key.
 func scheduleID(roomID id.RoomID, cronExpr, input string) string {
 	h := sha256.New()
 	h.Write([]byte(roomID))

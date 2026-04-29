@@ -112,10 +112,11 @@ func TestSchedulerFiresAtNextTime(t *testing.T) {
 }
 
 // TestSchedulerSkipsTickableTriggersForEvents pins the defence-in-depth
-// invariant: when the regular Matrix-event dispatch path calls Apply on a
-// ScheduleTrigger with a real event, the trigger MUST return no-match.
-// Otherwise an incoming message could double-fire a route that already
-// runs on a clock.
+// invariant: ScheduleTrigger.Apply returns no-match on real Matrix events
+// (evt != nil). The dispatch path itself does not skip Tickable triggers
+// — it walks every route in the room and calls Apply on each — so the
+// trigger is the layer keeping incoming messages from accidentally
+// driving a clock-scheduled route.
 func TestSchedulerSkipsTickableTriggersForEvents(t *testing.T) {
 	bot, _ := schedulerTestBot(t)
 	tr := &ScheduleTrigger{
@@ -130,7 +131,7 @@ func TestSchedulerSkipsTickableTriggersForEvents(t *testing.T) {
 	}))
 	bot.dispatch(context.Background(), schedulerTestMessageEvent("!r:e", "@u:e"))
 	if called {
-		t.Error("schedule trigger fired on a real Matrix event; the dispatch path must skip Tickable triggers for events")
+		t.Error("schedule trigger fired on a real Matrix event; ScheduleTrigger.Apply must return no-match for non-nil events")
 	}
 }
 
@@ -247,6 +248,151 @@ func TestSchedulerCatchUpOnRestart(t *testing.T) {
 	t.Fatalf("after catch-up, schedule.json[%q] = %v, want %v", wantKey, got[wantKey], want)
 }
 
+// TestSchedulerPersistedTimeEqualsNowIsFuture pins the boundary between
+// "persisted time is in the past, catch up immediately" and "persisted
+// time is in the future, wait for it." Persisted next-fire times are
+// always strictly later than the moment we wrote them, so on restart a
+// value exactly equal to the scheduler's `now` is the future end of the
+// window, not the past end — it must fire exactly once at that instant
+// and then advance to the cron's next natural fire, not double-fire (one
+// stale-catch-up, one at the instant) or skip ahead.
+func TestSchedulerPersistedTimeEqualsNowIsFuture(t *testing.T) {
+	bot, _ := schedulerTestBot(t)
+	t0 := time.Date(2026, 4, 28, 9, 0, 0, 0, time.UTC)
+	clock := newFakeClock(t0)
+
+	tr := &ScheduleTrigger{
+		Schedule: mustParseCron(t, "0 9 * * *"),
+		CronExpr: "0 9 * * *",
+		Input:    "morning",
+	}
+	h := &recordingHandler{}
+	roomID := id.RoomID("!r:e")
+	bot.RouteIn(roomID, tr, h)
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "schedule.json")
+	wantKey := scheduleID(roomID, "0 9 * * *", "morning")
+	// Persisted time exactly equal to t0 — the boundary case.
+	if err := saveScheduleStore(path, map[string]time.Time{wantKey: t0}); err != nil {
+		t.Fatalf("seed schedule.json: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		runScheduler(ctx, bot, clock, path)
+		close(done)
+	}()
+
+	// One fire at the persisted instant, no double-fire from a misread
+	// boundary.
+	waitForCalls(t, h, 1)
+	// The next-fire persisted after that single fire must be the cron's
+	// next natural instant strictly after t0 — i.e. tomorrow 09:00. If the
+	// scheduler had treated the persisted-equal-now as past and "caught
+	// up", e.next would still advance to the same place, but the trip
+	// through the catch-up branch is the bug we want to keep out of the
+	// codebase.
+	want := time.Date(2026, 4, 29, 9, 0, 0, 0, time.UTC)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		got, err := loadScheduleStore(path)
+		if err == nil && got[wantKey].Equal(want) {
+			// Give the loop a moment to spuriously double-fire if
+			// e.next was set wrong; if so we'd see a second handler
+			// call land here.
+			time.Sleep(20 * time.Millisecond)
+			if calls := len(h.calls()); calls != 1 {
+				t.Fatalf("handler fired %d times, want 1 (persisted-equal-now must produce one fire only)", calls)
+			}
+			cancel()
+			<-done
+			return
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	got, _ := loadScheduleStore(path)
+	t.Fatalf("schedule.json[%q] = %v, want %v", wantKey, got[wantKey], want)
+}
+
+// TestSchedulerFreshKeyWaitsForCronAndPersistsAfterFire pins the
+// first-registration contract when schedule.json already exists with
+// other entries: a freshly registered route whose key isn't in the file
+// MUST wait for the cron's first natural fire (no premature fire on
+// startup) AND must NOT appear in schedule.json until after that first
+// fire has actually happened. Persisting the next-fire on startup would
+// be the wrong moment — it would record an instant the cron didn't ask
+// for, which restart logic would then honour as a stale catch-up.
+func TestSchedulerFreshKeyWaitsForCronAndPersistsAfterFire(t *testing.T) {
+	bot, _ := schedulerTestBot(t)
+	t0 := time.Date(2026, 4, 27, 12, 0, 0, 0, time.UTC)
+	clock := newFakeClock(t0)
+
+	tr := &ScheduleTrigger{
+		Schedule: mustParseCron(t, "5 12 * * *"), // first fire 12:05
+		CronExpr: "5 12 * * *",
+		Input:    "ping",
+	}
+	h := &recordingHandler{}
+	roomID := id.RoomID("!r:e")
+	bot.RouteIn(roomID, tr, h)
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "schedule.json")
+	wantKey := scheduleID(roomID, "5 12 * * *", "ping")
+	otherKey := "unrelated-key"
+	other := time.Date(2099, 1, 1, 0, 0, 0, 0, time.UTC)
+	if err := saveScheduleStore(path, map[string]time.Time{otherKey: other}); err != nil {
+		t.Fatalf("seed schedule.json: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		runScheduler(ctx, bot, clock, path)
+		close(done)
+	}()
+
+	// Once the loop has armed its sleep timer, the startup phase is
+	// complete: any persistence the scheduler wanted to do at startup
+	// would already be on disk by now. Reading the file at this point
+	// must NOT show our new key — only the seeded unrelated entry.
+	waitForTimerArmed(clock, 1)
+	got, err := loadScheduleStore(path)
+	if err != nil {
+		t.Fatalf("loadScheduleStore: %v", err)
+	}
+	if _, premature := got[wantKey]; premature {
+		t.Fatalf("schedule.json contains %q before first fire: %v", wantKey, got)
+	}
+	if !got[otherKey].Equal(other) {
+		t.Errorf("seeded key %q not preserved: got %v, want %v", otherKey, got[otherKey], other)
+	}
+
+	// Advance to the cron's first instant and assert the fire happens.
+	clock.Advance(5 * time.Minute)
+	waitForCalls(t, h, 1)
+
+	// After the first fire the entry must be persisted, advanced to the
+	// cron's next instant strictly after the fire we just observed.
+	wantNext := time.Date(2026, 4, 28, 12, 5, 0, 0, time.UTC)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		got, err := loadScheduleStore(path)
+		if err == nil && got[wantKey].Equal(wantNext) {
+			cancel()
+			<-done
+			return
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	got, _ = loadScheduleStore(path)
+	t.Fatalf("after first fire, schedule.json[%q] = %v, want %v", wantKey, got[wantKey], wantNext)
+}
+
 // TestSchedulerSleepsUntilEarliest: with two schedules at different
 // future times, the scheduler must fire them in chronological order and
 // only after the clock crosses each's deadline.
@@ -346,12 +492,12 @@ func TestSchedulerMultipleScheduleSameKey(t *testing.T) {
 	<-done
 }
 
-// TestBotRunStartsSchedulerWhenScheduleRouteRegistered pins the wire-up
-// in Bot.Run: registering a tickable route must cause the scheduler
-// goroutine to fire it on tick, with no extra setup from the caller. We
-// inject a fakeClock via the unexported field so Run's scheduler walks
-// synthetic time instead of real time.
-func TestBotRunStartsSchedulerWhenScheduleRouteRegistered(t *testing.T) {
+// TestStartSchedulerFiresOnTickAfterRegistration pins the wire-up in
+// startScheduler: registering a tickable route and calling startScheduler
+// directly is enough to drive the schedule on synthetic time, with no
+// extra setup from the caller. The fakeClock is injected via the
+// unexported field. Run's wiring is tested separately.
+func TestStartSchedulerFiresOnTickAfterRegistration(t *testing.T) {
 	bot, _ := schedulerTestBot(t)
 	t0 := time.Date(2026, 4, 27, 12, 0, 0, 0, time.UTC)
 	clock := newFakeClock(t0)

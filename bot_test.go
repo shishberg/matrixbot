@@ -694,6 +694,41 @@ func TestBotSendSuccessQuiet(t *testing.T) {
 	}
 }
 
+// TestBotHasNonTickableRoute pins the predicate gating Run's
+// OnEventType(EventMessage) and OnEventType(EventReaction) registrations:
+// if every registered route is a Tickable schedule, Run must skip those
+// registrations so the dispatch path is never engaged for ordinary
+// messages and reactions. (Schedule routes don't need the message
+// channel — they fire on the clock.) Without this gate, a bot with only
+// a schedule route would still receive every message and log "no route
+// matched" because dispatch runs Apply on the schedule trigger and the
+// schedule trigger refuses non-nil events.
+func TestBotHasNonTickableRoute(t *testing.T) {
+	b := &Bot{routesByRoom: map[id.RoomID][]Route{}}
+	if b.hasNonTickableRoute() {
+		t.Error("empty routes: hasNonTickableRoute = true, want false")
+	}
+
+	tickable := &ScheduleTrigger{Input: "x"}
+	b.routesByRoom[id.RoomID("!r:e")] = []Route{{Trigger: tickable, Handler: HandlerFunc(func(_ context.Context, _ Request) (Response, error) {
+		return Response{}, nil
+	})}}
+	if b.hasNonTickableRoute() {
+		t.Error("only-schedule routes: hasNonTickableRoute = true, want false")
+	}
+
+	nonTickable := TriggerFunc(func(_ context.Context, _ *event.Event, _ EventFetcher) (Request, bool, error) {
+		return Request{}, false, nil
+	})
+	b.routesByRoom[id.RoomID("!r:e")] = append(b.routesByRoom[id.RoomID("!r:e")], Route{
+		Trigger: nonTickable,
+		Handler: HandlerFunc(func(_ context.Context, _ Request) (Response, error) { return Response{}, nil }),
+	})
+	if !b.hasNonTickableRoute() {
+		t.Error("mixed routes: hasNonTickableRoute = false, want true")
+	}
+}
+
 // TestBotDispatchLogsWhenRoomHasNoRoutes pins the operator-visible warning:
 // events in unconfigured rooms must produce a debug log so the operator can
 // tell the bot is receiving them.

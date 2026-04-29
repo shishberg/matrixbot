@@ -23,7 +23,8 @@ type scheduledEntry struct {
 
 // runScheduler walks the bot's route table for tickable triggers and, in
 // chronological order, fires each one as the clock crosses its next-fire
-// time. It blocks until ctx is cancelled.
+// time. It blocks until ctx is cancelled; returns immediately if no
+// tickable routes are registered.
 //
 // Restart behaviour: a next-fire time persisted to schedulePath in a
 // previous run is honoured if it's still in the future. A persisted time
@@ -58,9 +59,12 @@ func runScheduler(ctx context.Context, b *Bot, clock Clock, schedulePath string)
 		e := &entries[i]
 		t, persistedHere := persisted[e.id]
 		switch {
-		case persistedHere && t.After(now):
+		case persistedHere && !t.Before(now):
 			// We were offline less than one cycle; honour the persisted
-			// instant so a quick bounce produces no visible change.
+			// instant so a quick bounce produces no visible change. A
+			// persisted time equal to now is the future end of the window
+			// — we always write strictly future-of-fire-time — so wait
+			// for it, don't catch-up fire.
 			e.next = t
 		case persistedHere:
 			// Persisted time is in the past — the bot was offline when it
@@ -109,9 +113,11 @@ func runScheduler(ctx context.Context, b *Bot, clock Clock, schedulePath string)
 }
 
 // collectScheduledEntries walks routesByRoom for triggers that satisfy
-// the Tickable interface. Duplicate (room, cron, input) triples share an
-// id and only the first registration survives — duplicates would otherwise
-// double-fire on every tick.
+// the Tickable interface. Two routes registered with identical
+// (roomID, cron, input) configuration share a schedule ID; this function
+// keeps only the first such registration and discards later duplicates,
+// so the schedule fires once per tick rather than once per duplicate
+// registration.
 func collectScheduledEntries(b *Bot) []scheduledEntry {
 	var entries []scheduledEntry
 	seen := map[string]bool{}
@@ -146,6 +152,11 @@ func scheduleEntryID(roomID id.RoomID, t Trigger) string {
 	if st, ok := t.(*ScheduleTrigger); ok && st != nil {
 		return scheduleID(roomID, st.CronExpr, st.Input)
 	}
+	// The %T fallback is stable within a single binary build but changes
+	// if the trigger type is renamed or moved between packages. The
+	// worst case is one spurious catch-up fire on the next restart (the
+	// old key is treated as gone, the new key as fresh) — not data
+	// corruption.
 	return scheduleID(roomID, fmt.Sprintf("%T", t), "")
 }
 

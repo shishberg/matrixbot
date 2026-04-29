@@ -231,12 +231,17 @@ func (b *Bot) Run(ctx context.Context) error {
 		slog.Debug("matrixbot: rx", "type", evt.Type.Type, "class", evt.Type.Class, "room", evt.RoomID, "sender", evt.Sender, "id", evt.ID)
 	})
 	syncer.OnEventType(event.StateMember, b.handleInvite)
-	if len(b.routesByRoom) == 0 {
+	switch {
+	case len(b.routesByRoom) == 0:
 		slog.Warn("matrixbot: no routes registered; the bot will sync but ignore every event")
-	} else {
+	case b.hasNonTickableRoute():
 		syncer.OnEventType(event.EventMessage, b.dispatch)
 		syncer.OnEventType(event.EventReaction, b.dispatch)
 	}
+	// All-tickable case: don't subscribe dispatch to message/reaction
+	// events — the schedule loop drives those routes off the clock, and
+	// piping every incoming event through dispatch would only produce
+	// "no route matched" log spam.
 	go b.startScheduler(ctx)
 	return b.client.SyncWithContext(ctx)
 }
@@ -249,21 +254,32 @@ func (b *Bot) startScheduler(ctx context.Context) {
 	if !b.hasTickableRoute() {
 		return
 	}
-	clock := b.clock
-	if clock == nil {
-		clock = realClock{}
-	}
 	path := ""
 	if b.dataDir != "" {
 		path = b.dataDir.SchedulePath()
 	}
-	runScheduler(ctx, b, clock, path)
+	runScheduler(ctx, b, b.clock, path)
 }
 
 func (b *Bot) hasTickableRoute() bool {
 	for _, routes := range b.routesByRoom {
 		for _, r := range routes {
 			if _, ok := r.Trigger.(Tickable); ok {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// hasNonTickableRoute reports whether any registered route fires on
+// Matrix events (i.e. its Trigger is NOT a Tickable). Run uses this to
+// decide whether to subscribe dispatch to message/reaction events: a bot
+// with only schedule routes has no business in the message channel.
+func (b *Bot) hasNonTickableRoute() bool {
+	for _, routes := range b.routesByRoom {
+		for _, r := range routes {
+			if _, ok := r.Trigger.(Tickable); !ok {
 				return true
 			}
 		}
