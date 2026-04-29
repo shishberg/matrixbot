@@ -70,6 +70,8 @@ type Bot struct {
 	client       *mautrix.Client
 	sender       matrixSender
 	fetcher      EventFetcher
+	history      historySource
+	decrypter    eventDecrypter
 	joiner       roomJoiner
 	botUserID    id.UserID
 	routesByRoom map[id.RoomID][]Route
@@ -119,10 +121,13 @@ func NewBot(cfg BotConfig) (*Bot, error) {
 		autoJoin[r] = true
 	}
 
+	fetcher := newDecryptingFetcher(client)
 	return &Bot{
 		client:         client,
 		sender:         client,
-		fetcher:        newDecryptingFetcher(client),
+		fetcher:        fetcher,
+		history:        client,
+		decrypter:      fetcher,
 		joiner:         client,
 		botUserID:      cfg.UserID,
 		routesByRoom:   map[id.RoomID][]Route{},
