@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"maunium.net/go/mautrix/id"
 )
@@ -149,6 +150,46 @@ func TestRouteConfigBuildTriggerReaction(t *testing.T) {
 	}
 	if rt.Emoji != "+1" || rt.BotUserID != "@bot:e" {
 		t.Errorf("rt = %+v, want emoji +1 and bot @bot:e", rt)
+	}
+}
+
+func TestRouteConfigBuildTriggerSchedule(t *testing.T) {
+	tr, err := (RouteConfig{Trigger: "schedule", Cron: "0 9 * * *", Input: "morning"}).BuildTrigger(id.UserID("@bot:e"))
+	if err != nil {
+		t.Fatalf("BuildTrigger: %v", err)
+	}
+	st, ok := tr.(*ScheduleTrigger)
+	if !ok {
+		t.Fatalf("got %T, want *ScheduleTrigger", tr)
+	}
+	if st.Input != "morning" {
+		t.Errorf("Input = %q, want %q", st.Input, "morning")
+	}
+	if st.Schedule == nil {
+		t.Fatal("Schedule is nil")
+	}
+	// "0 9 * * *" from a noon-Monday baseline must land on 09:00 next day.
+	base := time.Date(2026, 4, 27, 12, 0, 0, 0, time.UTC)
+	want := time.Date(2026, 4, 28, 9, 0, 0, 0, time.UTC)
+	if got := st.Schedule.Next(base); !got.Equal(want) {
+		t.Errorf("Next(%v) = %v, want %v", base, got, want)
+	}
+}
+
+func TestRouteConfigBuildTriggerScheduleRequiresCron(t *testing.T) {
+	_, err := (RouteConfig{Trigger: "schedule", Input: "morning"}).BuildTrigger(id.UserID("@bot:e"))
+	if err == nil {
+		t.Fatal("want error for missing cron")
+	}
+	if !strings.Contains(err.Error(), "cron") {
+		t.Errorf("err = %v, want cron mention", err)
+	}
+}
+
+func TestRouteConfigBuildTriggerScheduleRejectsInvalidCron(t *testing.T) {
+	_, err := (RouteConfig{Trigger: "schedule", Cron: "not a cron"}).BuildTrigger(id.UserID("@bot:e"))
+	if err == nil {
+		t.Fatal("want error for invalid cron")
 	}
 }
 

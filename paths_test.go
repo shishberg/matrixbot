@@ -58,6 +58,9 @@ func TestPathsAccessors(t *testing.T) {
 	if got, want := dd.CryptoDBPath(), "/tmp/example/crypto.db"; got != want {
 		t.Errorf("CryptoDBPath = %q, want %q", got, want)
 	}
+	if got, want := dd.SchedulePath(), "/tmp/example/schedule.json"; got != want {
+		t.Errorf("SchedulePath = %q, want %q", got, want)
+	}
 }
 
 func TestCryptoDBSidecarPaths(t *testing.T) {

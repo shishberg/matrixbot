@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/robfig/cron/v3"
 	"maunium.net/go/mautrix/id"
 )
 
@@ -53,6 +54,12 @@ type RouteConfig struct {
 	Prefix string `json:"prefix,omitempty"`
 	// Emoji is the unicode emoji a "reaction" trigger looks for.
 	Emoji string `json:"emoji,omitempty"`
+	// Cron is the standard 5-field cron expression a "schedule" trigger
+	// fires on (minute hour day-of-month month day-of-week).
+	Cron string `json:"cron,omitempty"`
+	// Input is the synthetic Request.Input a "schedule" trigger hands the
+	// handler when it fires. Other triggers ignore this field.
+	Input string `json:"input,omitempty"`
 	// Extensions is host-decoded per-route configuration. matrixbot
 	// preserves the bytes verbatim across save/load and never inspects
 	// the contents.
@@ -75,6 +82,16 @@ func (r RouteConfig) BuildTrigger(botUserID id.UserID) (Trigger, error) {
 			return nil, fmt.Errorf("reaction trigger requires a non-empty emoji")
 		}
 		return ReactionTrigger{Emoji: r.Emoji, BotUserID: botUserID}, nil
+	case "schedule":
+		if r.Cron == "" {
+			return nil, fmt.Errorf("schedule trigger requires a non-empty cron expression")
+		}
+		parser := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
+		sched, err := parser.Parse(r.Cron)
+		if err != nil {
+			return nil, fmt.Errorf("schedule trigger cron %q: %w", r.Cron, err)
+		}
+		return &ScheduleTrigger{Schedule: sched, CronExpr: r.Cron, Input: r.Input}, nil
 	default:
 		return nil, fmt.Errorf("unknown trigger kind %q", r.Trigger)
 	}
@@ -178,7 +195,7 @@ func isAllowedRoomConfigKey(key string) bool {
 
 func isAllowedRouteConfigKey(key string) bool {
 	switch key {
-	case "trigger", "handler", "prefix", "emoji", "extensions":
+	case "trigger", "handler", "prefix", "emoji", "cron", "input", "extensions":
 		return true
 	default:
 		return false

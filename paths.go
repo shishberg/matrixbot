@@ -53,6 +53,11 @@ func (d DataDir) AccountPath() string { return filepath.Join(string(d), "account
 // itself; sidecars are at CryptoDBPaths).
 func (d DataDir) CryptoDBPath() string { return filepath.Join(string(d), "crypto.db") }
 
+// SchedulePath returns the absolute path to schedule.json, where the
+// scheduler persists each schedule's next-fire time so a restart picks up
+// where it left off.
+func (d DataDir) SchedulePath() string { return filepath.Join(string(d), "schedule.json") }
+
 // CryptoDBPaths returns the SQLite DB path and its -wal / -shm sidecars.
 // SQLite in WAL mode creates the sidecars; wiping all three together is
 // what logout needs — leaving any one behind keeps a stale identity.

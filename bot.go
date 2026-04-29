@@ -61,6 +61,13 @@ type BotConfig struct {
 	// Logger, when non-nil, is the zerolog logger plumbed into the
 	// underlying mautrix client. Nil falls back to a no-op logger.
 	Logger *zerolog.Logger
+
+	// DataDir is where the bot persists per-run state. The scheduler
+	// uses it for schedule.json (next-fire times); other subsystems may
+	// read it indirectly through the config / session / account paths.
+	// An empty DataDir disables persistence-dependent features (the
+	// scheduler will still run but won't survive a restart).
+	DataDir DataDir
 }
 
 // Bot owns the Matrix client and a per-room route table. Behaviour-specific
@@ -93,6 +100,17 @@ type Bot struct {
 	// operatorUserID, when non-empty, is the only user allowed to verify
 	// the bot's device via SAS.
 	operatorUserID id.UserID
+
+	// dataDir is where schedule.json (and any future per-run state) is
+	// kept. Empty disables disk-backed scheduler persistence — restart
+	// catch-up still works in-process but stale next-fire times across
+	// restarts won't be honoured.
+	dataDir DataDir
+
+	// clock is the seam the scheduler reads for time and timers. Tests
+	// substitute a fakeClock via the same field. Defaults to realClock{}
+	// in NewBot.
+	clock Clock
 }
 
 // NewBot constructs the Matrix client. Routes are added with RouteIn() before
@@ -136,6 +154,8 @@ func NewBot(cfg BotConfig) (*Bot, error) {
 		cryptoDB:       cfg.CryptoDB,
 		recoveryKey:    cfg.RecoveryKey,
 		operatorUserID: cfg.OperatorUserID,
+		dataDir:        cfg.DataDir,
+		clock:          realClock{},
 	}, nil
 }
 
@@ -217,7 +237,38 @@ func (b *Bot) Run(ctx context.Context) error {
 		syncer.OnEventType(event.EventMessage, b.dispatch)
 		syncer.OnEventType(event.EventReaction, b.dispatch)
 	}
+	go b.startScheduler(ctx)
 	return b.client.SyncWithContext(ctx)
+}
+
+// startScheduler launches the schedule loop if any registered route is
+// Tickable. It is a no-op when no schedule routes exist, so it's safe to
+// call unconditionally from Run. Exposed (lowercase) so the bot's own
+// tests can drive it directly without standing up the full Run path.
+func (b *Bot) startScheduler(ctx context.Context) {
+	if !b.hasTickableRoute() {
+		return
+	}
+	clock := b.clock
+	if clock == nil {
+		clock = realClock{}
+	}
+	path := ""
+	if b.dataDir != "" {
+		path = b.dataDir.SchedulePath()
+	}
+	runScheduler(ctx, b, clock, path)
+}
+
+func (b *Bot) hasTickableRoute() bool {
+	for _, routes := range b.routesByRoom {
+		for _, r := range routes {
+			if _, ok := r.Trigger.(Tickable); ok {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // dispatch walks the routes for evt's room in order and runs the first one
