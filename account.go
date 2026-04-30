@@ -14,6 +14,9 @@ type Account struct {
 // LoadAccount reads account.json from dd. Missing file returns
 // ErrNotInitialized.
 func LoadAccount(dd DataDir) (Account, error) {
+	if err := migrateLegacySecrets(dd); err != nil {
+		return Account{}, err
+	}
 	var a Account
 	if err := readJSON(dd.AccountPath(), &a); err != nil {
 		return Account{}, err
@@ -23,7 +26,7 @@ func LoadAccount(dd DataDir) (Account, error) {
 
 // Save writes account.json to dd, creating the directory if needed.
 func (a Account) Save(dd DataDir) error {
-	if err := ensureDataDir(dd); err != nil {
+	if err := ensureSecretsDir(dd); err != nil {
 		return err
 	}
 	return writeJSON(dd.AccountPath(), a)

@@ -12,6 +12,9 @@ type Session struct {
 // LoadSession reads session.json from dd. Missing file returns
 // ErrNotInitialized.
 func LoadSession(dd DataDir) (Session, error) {
+	if err := migrateLegacySecrets(dd); err != nil {
+		return Session{}, err
+	}
 	var s Session
 	if err := readJSON(dd.SessionPath(), &s); err != nil {
 		return Session{}, err
@@ -21,7 +24,7 @@ func LoadSession(dd DataDir) (Session, error) {
 
 // Save writes session.json to dd, creating the directory if needed.
 func (s Session) Save(dd DataDir) error {
-	if err := ensureDataDir(dd); err != nil {
+	if err := ensureSecretsDir(dd); err != nil {
 		return err
 	}
 	return writeJSON(dd.SessionPath(), s)

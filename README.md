@@ -26,22 +26,24 @@ Concretely, the package gives you:
 - On-disk state under a single data directory:
   - `config.json` — homeserver, bot user ID, operator user ID, rooms
     with per-room routes and extensions.
-  - `session.json` — access token + device ID. Rotated by `RunLogin`.
-  - `account.json` — cross-signing recovery key + crypto-store pickle
-    key. Survives logout.
-  - `crypto.db` (+ `-wal` / `-shm` sidecars) — mautrix's SQLite
-    olm/megolm store, opened by the cryptohelper inside `Bot.Run`.
-  All files are mode `0600`, the directory is `0700`, and writes are
-  atomic (write-then-rename).
+  - `.secrets/session.json` — access token + device ID. Rotated by
+    `RunLogin`.
+  - `.secrets/account.json` — cross-signing recovery key +
+    crypto-store pickle key. Survives logout.
+  - `.secrets/crypto.db` (+ `-wal` / `-shm` sidecars) — mautrix's
+    SQLite olm/megolm store, opened by the cryptohelper inside
+    `Bot.Run`.
+  Secret files are mode `0600`, private directories are `0700`, and
+  writes are atomic (write-then-rename).
 - An interactive `RunInit(ctx, dd, deps)` flow that prompts for
   homeserver / user ID / password / operator user ID, calls `/login`,
   mints a fresh cross-signing identity, and persists the resulting
-  recovery key to `account.json`. The recovery key is never logged or
-  printed — `account.json` is the only copy.
+  recovery key to `.secrets/account.json`. The recovery key is never
+  logged or printed; that file is the only copy.
 - `RunLogin(ctx, dd, deps)` to rotate the access token using the
   homeserver and user ID already in `config.json`.
 - `RunLogout(ctx, dd, deps)` to invalidate the server-side session and
-  wipe `session.json` and the crypto DB. Server-side failures don't
+  wipe `.secrets/session.json` and the crypto DB. Server-side failures don't
   block local cleanup, because that's the whole point of the command.
 - A stdio `Prompter` (`NewStdioPrompter`) and an `EnvLookup` adapter
   (`EnvLookupFunc(os.Getenv)`) so tests can hand in a map and
@@ -79,12 +81,13 @@ The result is always absolute so that a later `cd` (systemd
 `WorkingDirectory`, shell aliases, etc.) can't shift the device
 identity.
 
-| File           | Holds                                                                |
-|----------------|----------------------------------------------------------------------|
-| `config.json`  | `Config`: homeserver, bot user ID, operator user ID, rooms map       |
-| `session.json` | `Session`: access token + device ID                                  |
-| `account.json` | `Account`: cross-signing recovery key + crypto-store pickle key      |
-| `crypto.db`    | mautrix SQLite olm/megolm store (+ `-wal` / `-shm` sidecars)         |
+| File                         | Holds                                                           |
+|------------------------------|-----------------------------------------------------------------|
+| `config.json`                | `Config`: homeserver, bot user ID, operator user ID, rooms map  |
+| `.secrets/session.json`      | `Session`: access token + device ID                             |
+| `.secrets/account.json`      | `Account`: cross-signing recovery key + crypto-store pickle key |
+| `.secrets/crypto.db`         | mautrix SQLite olm/megolm store (+ `-wal` / `-shm` sidecars)    |
+| `.secrets/extensions/...`    | Host-owned room extension secrets                               |
 
 Note: matrixbot writes each JSON file via write-then-rename, so a
 sibling `<name>.json.tmp` exists briefly during a save and may be left

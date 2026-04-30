@@ -85,9 +85,9 @@ var (
 	bootstrapOlmMachine = e2ee.Bootstrap
 )
 
-// RunInit drives the interactive setup. It writes config.json,
-// session.json and account.json under dd, in that order, then prints a
-// single line directing the operator to start the bot.
+// RunInit drives the interactive setup. It writes config.json plus
+// session.json and account.json in the secrets dir, then prints a single
+// line directing the operator to start the bot.
 //
 // Refuses when config.json already exists — re-running init is almost
 // never what the operator wants and silently overwriting credentials

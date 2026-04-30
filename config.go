@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/robfig/cron/v3"
 	"maunium.net/go/mautrix/id"
@@ -250,17 +251,30 @@ func ensureDataDir(dd DataDir) error {
 	return nil
 }
 
-// writeJSON marshals v and atomically replaces path. The write goes to a
-// sibling .tmp file first and is only renamed into place once the data
-// is fully written; a crash mid-write leaves the prior file intact rather
-// than truncating it, which matters because account.json holds the only
-// copy of the recovery key.
-func writeJSON(path string, v any) error {
-	data, err := json.MarshalIndent(v, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshalling %s: %w", path, err)
+func ensureSecretsDir(dd DataDir) error {
+	if err := ensureDataDir(dd); err != nil {
+		return err
 	}
-	data = append(data, '\n')
+	return ensurePrivateDir(dd.SecretsDir())
+}
+
+func ensurePrivateDir(path string) error {
+	if err := os.MkdirAll(path, 0o700); err != nil {
+		return fmt.Errorf("creating secrets dir %s: %w", path, err)
+	}
+	if err := os.Chmod(path, 0o700); err != nil {
+		return fmt.Errorf("tightening secrets dir %s: %w", path, err)
+	}
+	return nil
+}
+
+// WriteSecret writes bytes to a secret path with private file and directory
+// modes. The caller chooses the path with DataDir.SecretPath or
+// DataDir.ExtensionSecretPath.
+func WriteSecret(path string, data []byte) error {
+	if err := ensurePrivateDir(filepath.Dir(path)); err != nil {
+		return err
+	}
 	tmp := path + ".tmp"
 	if err := os.Remove(tmp); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("removing stale temp file %s: %w", tmp, err)
@@ -288,6 +302,20 @@ func writeJSON(path string, v any) error {
 		return fmt.Errorf("renaming %s -> %s: %w", tmp, path, err)
 	}
 	return nil
+}
+
+// writeJSON marshals v and atomically replaces path. The write goes to a
+// sibling .tmp file first and is only renamed into place once the data
+// is fully written; a crash mid-write leaves the prior file intact rather
+// than truncating it, which matters because account.json holds the only
+// copy of the recovery key.
+func writeJSON(path string, v any) error {
+	data, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshalling %s: %w", path, err)
+	}
+	data = append(data, '\n')
+	return WriteSecret(path, data)
 }
 
 // readJSON parses path into v. Missing file is mapped to ErrNotInitialized

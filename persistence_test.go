@@ -2,6 +2,7 @@ package matrixbot
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -41,6 +42,9 @@ func TestSaveReplacesPreExistingTempFileWithMode0600(t *testing.T) {
 				t.Fatalf("mkdir: %v", err)
 			}
 			tmp := tt.path(dd) + ".tmp"
+			if err := os.MkdirAll(filepath.Dir(tmp), 0o700); err != nil {
+				t.Fatalf("mkdir temp parent: %v", err)
+			}
 			if err := os.WriteFile(tmp, []byte("stale"), 0o644); err != nil {
 				t.Fatalf("write temp: %v", err)
 			}

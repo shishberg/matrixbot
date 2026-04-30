@@ -37,7 +37,7 @@ func (d LogoutDeps) program() string {
 }
 
 // RunLogout invalidates the server-side session and wipes session.json
-// plus the local crypto store. config.json and account.json are
+// plus the local crypto store from the secrets dir. config.json and account.json are
 // preserved so the next login keeps the same recovery key and
 // cross-signing identity — rotating an access token doesn't change who
 // the bot is.

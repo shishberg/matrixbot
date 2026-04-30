@@ -8,6 +8,8 @@
 package matrixbot
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 )
@@ -19,8 +21,7 @@ const DataDirEnv = "MATRIXBOT_DATA_DIR"
 const defaultDataDir = ".matrixbot"
 
 // DataDir is an absolute filesystem path to the bot's data directory. It
-// holds config.json, session.json, account.json, and crypto.db (plus
-// SQLite sidecars).
+// holds config.json plus the private .secrets directory.
 type DataDir string
 
 // ResolveDataDir picks the data directory. MATRIXBOT_DATA_DIR wins;
@@ -43,15 +44,30 @@ func ResolveDataDir() (DataDir, error) {
 // ConfigPath returns the absolute path to config.json.
 func (d DataDir) ConfigPath() string { return filepath.Join(string(d), "config.json") }
 
+// SecretsDir returns the private directory matrixbot uses for tokens,
+// encryption keys, and other non-operator-editable files.
+func (d DataDir) SecretsDir() string { return filepath.Join(string(d), ".secrets") }
+
+// SecretPath returns a path inside SecretsDir.
+func (d DataDir) SecretPath(name string) string {
+	return filepath.Join(d.SecretsDir(), safeSecretSegment(name))
+}
+
+// ExtensionSecretPath returns a stable secret path for a room extension.
+func (d DataDir) ExtensionSecretPath(roomID, extension, name string) string {
+	sum := sha256.Sum256([]byte(roomID))
+	return filepath.Join(d.SecretsDir(), "extensions", hex.EncodeToString(sum[:])[:16], safeSecretSegment(extension), safeSecretSegment(name))
+}
+
 // SessionPath returns the absolute path to session.json.
-func (d DataDir) SessionPath() string { return filepath.Join(string(d), "session.json") }
+func (d DataDir) SessionPath() string { return d.SecretPath("session.json") }
 
 // AccountPath returns the absolute path to account.json.
-func (d DataDir) AccountPath() string { return filepath.Join(string(d), "account.json") }
+func (d DataDir) AccountPath() string { return d.SecretPath("account.json") }
 
 // CryptoDBPath returns the absolute path to crypto.db (the SQLite file
 // itself; sidecars are at CryptoDBPaths).
-func (d DataDir) CryptoDBPath() string { return filepath.Join(string(d), "crypto.db") }
+func (d DataDir) CryptoDBPath() string { return d.SecretPath("crypto.db") }
 
 // SchedulePath returns the absolute path to schedule.json, where the
 // scheduler persists each schedule's next-fire time so a restart picks up
@@ -64,4 +80,22 @@ func (d DataDir) SchedulePath() string { return filepath.Join(string(d), "schedu
 func (d DataDir) CryptoDBPaths() []string {
 	db := d.CryptoDBPath()
 	return []string{db, db + "-wal", db + "-shm"}
+}
+
+func safeSecretSegment(s string) string {
+	if s != "" && s != "." && s != ".." {
+		ok := true
+		for _, r := range s {
+			if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' || r == '.' {
+				continue
+			}
+			ok = false
+			break
+		}
+		if ok {
+			return s
+		}
+	}
+	sum := sha256.Sum256([]byte(s))
+	return "sha256-" + hex.EncodeToString(sum[:])[:16]
 }
