@@ -2,6 +2,7 @@ package matrixbot
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -46,7 +47,8 @@ type eventDecrypter interface {
 // a mention, the mention itself is the current input, not prior context.
 //
 // Encrypted events are decrypted using the same path as parent-event
-// lookups, so callers see plaintext bodies regardless of room E2EE state.
+// lookups. Individual encrypted events that cannot be decrypted are skipped;
+// successfully decrypted messages are returned with plaintext bodies.
 // Non-message events (joins, reactions, redactions, state) are filtered out
 // after pagination so that an active room with lots of state noise still
 // returns up to `limit` actual messages.
@@ -74,7 +76,7 @@ func (b *Bot) PreviousMessages(ctx context.Context, roomID id.RoomID, before id.
 	// EventsBefore is newest-first; we accumulate everything in that order
 	// and reverse at the end, so the pagination loop only ever appends.
 	newestFirst := make([]Message, 0, limit)
-	consume := func(events []*event.Event) {
+	consume := func(events []*event.Event) error {
 		for _, evt := range events {
 			if evt == nil {
 				continue
@@ -86,6 +88,9 @@ func (b *Bot) PreviousMessages(ctx context.Context, roomID id.RoomID, before id.
 			}
 			decrypted, err := b.decrypter.decrypt(ctx, evt)
 			if err != nil {
+				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+					return fmt.Errorf("matrixbot: decrypting previous message %s: %w", evt.ID, err)
+				}
 				continue
 			}
 			if decrypted == nil || decrypted.Type != event.EventMessage {
@@ -102,12 +107,15 @@ func (b *Bot) PreviousMessages(ctx context.Context, roomID id.RoomID, before id.
 				Timestamp: time.UnixMilli(decrypted.Timestamp),
 			})
 			if len(newestFirst) >= limit {
-				return
+				return nil
 			}
 		}
+		return nil
 	}
 
-	consume(resp.EventsBefore)
+	if err := consume(resp.EventsBefore); err != nil {
+		return nil, err
+	}
 
 	from := resp.Start
 	for pages := 0; len(newestFirst) < limit && from != "" && pages < maxHistoryPages; pages++ {
@@ -118,7 +126,9 @@ func (b *Bot) PreviousMessages(ctx context.Context, roomID id.RoomID, before id.
 		if page == nil {
 			break
 		}
-		consume(page.Chunk)
+		if err := consume(page.Chunk); err != nil {
+			return nil, err
+		}
 		// End == "" or End == from both signal the timeline is exhausted;
 		// either way, stop. Anything else, advance.
 		if page.End == "" || page.End == from {

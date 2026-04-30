@@ -194,6 +194,37 @@ func TestPreviousMessagesEmptyRoomReturnsEmpty(t *testing.T) {
 	}
 }
 
+func TestPreviousMessagesReturnsContextFetchErrors(t *testing.T) {
+	wantErr := errors.New("context fetch failed")
+	src := &fakeHistorySource{contextErr: wantErr}
+	bot := newHistoryBot(src, noopDecrypter{})
+
+	got, err := bot.PreviousMessages(context.Background(), id.RoomID("!r:e"), id.EventID("$cur"), 5)
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("PreviousMessages error = %v, want wrapping %v", err, wantErr)
+	}
+	if got != nil {
+		t.Errorf("got %v, want nil", got)
+	}
+}
+
+func TestPreviousMessagesReturnsPaginationFetchErrors(t *testing.T) {
+	wantErr := errors.New("pagination failed")
+	src := &fakeHistorySource{
+		contextResp: &mautrix.RespContext{Start: "tok1"},
+		messagesErr: wantErr,
+	}
+	bot := newHistoryBot(src, noopDecrypter{})
+
+	got, err := bot.PreviousMessages(context.Background(), id.RoomID("!r:e"), id.EventID("$cur"), 5)
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("PreviousMessages error = %v, want wrapping %v", err, wantErr)
+	}
+	if got != nil {
+		t.Errorf("got %v, want nil", got)
+	}
+}
+
 // TestPreviousMessagesReturnsBeforeEventsOldestFirst pins ordering.
 // Context returns EventsBefore newest-first; the API surface promises
 // oldest-first because callers will format chronologically.
@@ -376,6 +407,40 @@ func TestPreviousMessagesSkipsDecryptFailuresAndKeepsPaginating(t *testing.T) {
 	}
 	if src.messagesN != 1 {
 		t.Errorf("Messages called %d times, want 1", src.messagesN)
+	}
+}
+
+func TestPreviousMessagesPreservesDecryptContextErrors(t *testing.T) {
+	tests := []struct {
+		name    string
+		wantErr error
+	}{
+		{name: "canceled", wantErr: context.Canceled},
+		{name: "deadline exceeded", wantErr: context.DeadlineExceeded},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			src := &fakeHistorySource{
+				contextResp: &mautrix.RespContext{
+					EventsBefore: []*event.Event{
+						encryptedEvent("$bad", "@u:e", 1000),
+					},
+				},
+			}
+			dec := stubDecrypter{errs: map[id.EventID]error{
+				"$bad": tt.wantErr,
+			}}
+			bot := newHistoryBot(src, dec)
+
+			got, err := bot.PreviousMessages(context.Background(), id.RoomID("!r:e"), id.EventID("$cur"), 5)
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("PreviousMessages error = %v, want wrapping %v", err, tt.wantErr)
+			}
+			if got != nil {
+				t.Errorf("got %v, want nil", got)
+			}
+		})
 	}
 }
 
