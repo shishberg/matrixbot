@@ -74,7 +74,7 @@ func (b *Bot) PreviousMessages(ctx context.Context, roomID id.RoomID, before id.
 	// EventsBefore is newest-first; we accumulate everything in that order
 	// and reverse at the end, so the pagination loop only ever appends.
 	newestFirst := make([]Message, 0, limit)
-	consume := func(events []*event.Event) error {
+	consume := func(events []*event.Event) {
 		for _, evt := range events {
 			if evt == nil {
 				continue
@@ -86,7 +86,7 @@ func (b *Bot) PreviousMessages(ctx context.Context, roomID id.RoomID, before id.
 			}
 			decrypted, err := b.decrypter.decrypt(ctx, evt)
 			if err != nil {
-				return fmt.Errorf("matrixbot: decrypting %s: %w", evt.ID, err)
+				continue
 			}
 			if decrypted == nil || decrypted.Type != event.EventMessage {
 				continue
@@ -102,15 +102,12 @@ func (b *Bot) PreviousMessages(ctx context.Context, roomID id.RoomID, before id.
 				Timestamp: time.UnixMilli(decrypted.Timestamp),
 			})
 			if len(newestFirst) >= limit {
-				return nil
+				return
 			}
 		}
-		return nil
 	}
 
-	if err := consume(resp.EventsBefore); err != nil {
-		return nil, err
-	}
+	consume(resp.EventsBefore)
 
 	from := resp.Start
 	for pages := 0; len(newestFirst) < limit && from != "" && pages < maxHistoryPages; pages++ {
@@ -121,9 +118,7 @@ func (b *Bot) PreviousMessages(ctx context.Context, roomID id.RoomID, before id.
 		if page == nil {
 			break
 		}
-		if err := consume(page.Chunk); err != nil {
-			return nil, err
-		}
+		consume(page.Chunk)
 		// End == "" or End == from both signal the timeline is exhausted;
 		// either way, stop. Anything else, advance.
 		if page.End == "" || page.End == from {

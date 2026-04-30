@@ -75,11 +75,15 @@ func (noopDecrypter) decrypt(_ context.Context, evt *event.Event) (*event.Event,
 // by event ID. Plain events pass through.
 type stubDecrypter struct {
 	plaintexts map[id.EventID]*event.Event
+	errs       map[id.EventID]error
 }
 
 func (s stubDecrypter) decrypt(_ context.Context, evt *event.Event) (*event.Event, error) {
 	if evt == nil || evt.Type != event.EventEncrypted {
 		return evt, nil
+	}
+	if err, ok := s.errs[evt.ID]; ok {
+		return nil, err
 	}
 	if pt, ok := s.plaintexts[evt.ID]; ok {
 		return pt, nil
@@ -324,6 +328,54 @@ func TestPreviousMessagesDecryptsEncryptedEvents(t *testing.T) {
 	}
 	if got[0].Body != "decrypted-1" || got[1].Body != "decrypted-2" {
 		t.Errorf("bodies = %q/%q, want decrypted-1/decrypted-2", got[0].Body, got[1].Body)
+	}
+}
+
+func TestPreviousMessagesSkipsDecryptFailuresAndKeepsPaginating(t *testing.T) {
+	src := &fakeHistorySource{
+		contextResp: &mautrix.RespContext{
+			Start: "tok1",
+			EventsBefore: []*event.Event{
+				msgEvent("$m3", "@u:e", "three", 3000),
+				encryptedEvent("$bad", "@u:e", 2500),
+			},
+		},
+		pages: []historyPage{
+			{
+				from:   "tok1",
+				endTok: "tok2",
+				chunk: []*event.Event{
+					encryptedEvent("$e2", "@u:e", 2000),
+					msgEvent("$m1", "@u:e", "one", 1000),
+				},
+			},
+		},
+	}
+	dec := stubDecrypter{
+		plaintexts: map[id.EventID]*event.Event{
+			"$e2": msgEvent("$e2", "@u:e", "two", 2000),
+		},
+		errs: map[id.EventID]error{
+			"$bad": errors.New("unsupported event encryption algorithm"),
+		},
+	}
+	bot := newHistoryBot(src, dec)
+
+	got, err := bot.PreviousMessages(context.Background(), id.RoomID("!r:e"), id.EventID("$cur"), 3)
+	if err != nil {
+		t.Fatalf("PreviousMessages: %v", err)
+	}
+	want := []string{"one", "two", "three"}
+	if len(got) != len(want) {
+		t.Fatalf("len = %d, want %d (got=%+v)", len(got), len(want), got)
+	}
+	for i, w := range want {
+		if got[i].Body != w {
+			t.Errorf("[%d] Body = %q, want %q", i, got[i].Body, w)
+		}
+	}
+	if src.messagesN != 1 {
+		t.Errorf("Messages called %d times, want 1", src.messagesN)
 	}
 }
 
