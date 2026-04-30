@@ -66,3 +66,37 @@ func TestSaveReplacesPreExistingTempFileWithMode0600(t *testing.T) {
 		})
 	}
 }
+
+func TestWriteSecretTightensNestedSecretsDirs(t *testing.T) {
+	dd := DataDir(t.TempDir())
+	path := dd.ExtensionSecretPath("!room:example", "mopoke", "token")
+	wideDir := filepath.Dir(path)
+	if err := os.MkdirAll(wideDir, 0o755); err != nil {
+		t.Fatalf("mkdir wide dir: %v", err)
+	}
+	for dir := wideDir; filepath.Base(dir) != ".secrets"; dir = filepath.Dir(dir) {
+		if err := os.Chmod(dir, 0o755); err != nil {
+			t.Fatalf("chmod %s: %v", dir, err)
+		}
+	}
+	if err := os.Chmod(dd.SecretsDir(), 0o755); err != nil {
+		t.Fatalf("chmod secrets dir: %v", err)
+	}
+
+	if err := WriteSecret(path, []byte("secret\n")); err != nil {
+		t.Fatalf("WriteSecret: %v", err)
+	}
+
+	for dir := wideDir; ; dir = filepath.Dir(dir) {
+		info, err := os.Stat(dir)
+		if err != nil {
+			t.Fatalf("stat %s: %v", dir, err)
+		}
+		if got := info.Mode().Perm(); got != 0o700 {
+			t.Errorf("%s mode = %o, want 0700", dir, got)
+		}
+		if filepath.Base(dir) == ".secrets" {
+			break
+		}
+	}
+}

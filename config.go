@@ -262,10 +262,29 @@ func ensurePrivateDir(path string) error {
 	if err := os.MkdirAll(path, 0o700); err != nil {
 		return fmt.Errorf("creating secrets dir %s: %w", path, err)
 	}
-	if err := os.Chmod(path, 0o700); err != nil {
-		return fmt.Errorf("tightening secrets dir %s: %w", path, err)
+	for _, dir := range privateDirsToTighten(path) {
+		if err := os.Chmod(dir, 0o700); err != nil {
+			return fmt.Errorf("tightening secrets dir %s: %w", dir, err)
+		}
 	}
 	return nil
+}
+
+func privateDirsToTighten(path string) []string {
+	clean := filepath.Clean(path)
+	dirs := []string{clean}
+	for dir := clean; filepath.Base(dir) != ".secrets"; {
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return dirs[:1]
+		}
+		dir = parent
+		dirs = append(dirs, dir)
+	}
+	for i, j := 0, len(dirs)-1; i < j; i, j = i+1, j-1 {
+		dirs[i], dirs[j] = dirs[j], dirs[i]
+	}
+	return dirs
 }
 
 // WriteSecret writes bytes to a secret path with private file and directory
