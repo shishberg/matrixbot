@@ -55,6 +55,19 @@ func redactionEvent(idStr, sender, target string, tsMillis int64) *event.Event {
 	}
 }
 
+func redactedMessageEvent(idStr, sender string, tsMillis int64) *event.Event {
+	return &event.Event{
+		Type:      event.EventMessage,
+		ID:        id.EventID(idStr),
+		RoomID:    id.RoomID("!r:e"),
+		Sender:    id.UserID(sender),
+		Timestamp: tsMillis,
+		Unsigned: event.Unsigned{
+			RedactedBecause: redactionEvent("$redact-"+idStr, "@mod:e", idStr, tsMillis+1),
+		},
+	}
+}
+
 func observedMessageEvent(idStr, sender, body string, tsMillis int64) *event.Event {
 	evt := msgEvent(idStr, sender, body, tsMillis)
 	evt.RoomID = id.RoomID("!r:e")
@@ -114,6 +127,18 @@ func TestObservedEventFromMatrixEventConvertsStructuredEvents(t *testing.T) {
 				Sender:         id.UserID("@mod:e"),
 				Timestamp:      time.UnixMilli(4000),
 				RedactsEventID: id.EventID("$m1"),
+			},
+		},
+		{
+			name: "redacted original event",
+			evt:  redactedMessageEvent("$redacted", "@u:e", 5000),
+			want: ObservedEvent{
+				Kind:           ObservedEventRedaction,
+				EventID:        id.EventID("$redacted"),
+				RoomID:         id.RoomID("!r:e"),
+				Sender:         id.UserID("@u:e"),
+				Timestamp:      time.UnixMilli(5000),
+				RedactsEventID: id.EventID("$redacted"),
 			},
 		},
 	}

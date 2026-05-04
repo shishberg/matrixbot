@@ -72,6 +72,11 @@ func ObservedEventFromMatrixEvent(evt *event.Event) (ObservedEvent, bool) {
 		Sender:    evt.Sender,
 		Timestamp: time.UnixMilli(evt.Timestamp),
 	}
+	if evt.Unsigned.RedactedBecause != nil {
+		observed.Kind = ObservedEventRedaction
+		observed.RedactsEventID = evt.ID
+		return observed, true
+	}
 	switch evt.Type {
 	case event.EventMessage:
 		mec, ok := messageContent(evt)

@@ -245,8 +245,10 @@ func (b *Bot) Run(ctx context.Context) error {
 		syncer.OnEventType(event.EventRedaction, b.observeEvent)
 	}
 	switch {
-	case len(b.routesByRoom) == 0:
+	case len(b.routesByRoom) == 0 && b.observedEventHandler == nil:
 		slog.Warn("matrixbot: no routes registered; the bot will sync but ignore every event")
+	case len(b.routesByRoom) == 0:
+		slog.Warn("matrixbot: no routes registered; the bot will observe events but not dispatch routes")
 	case b.hasNonTickableRoute():
 		syncer.OnEventType(event.EventMessage, b.dispatch)
 		syncer.OnEventType(event.EventReaction, b.dispatch)
