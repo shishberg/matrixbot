@@ -27,6 +27,9 @@ type fakeHistorySource struct {
 	gotContextRoom    id.RoomID
 	gotContextEventID id.EventID
 	gotMessagesFrom   []string
+	gotMessagesTo     []string
+	gotMessagesDir    []mautrix.Direction
+	gotMessagesLimit  []int
 }
 
 type historyPage struct {
@@ -46,14 +49,17 @@ func (f *fakeHistorySource) Context(_ context.Context, roomID id.RoomID, eventID
 	return f.contextResp, nil
 }
 
-func (f *fakeHistorySource) Messages(_ context.Context, _ id.RoomID, from, _ string, _ mautrix.Direction, _ *mautrix.FilterPart, _ int) (*mautrix.RespMessages, error) {
+func (f *fakeHistorySource) Messages(_ context.Context, _ id.RoomID, from, to string, dir mautrix.Direction, _ *mautrix.FilterPart, limit int) (*mautrix.RespMessages, error) {
 	f.messagesN++
 	f.gotMessagesFrom = append(f.gotMessagesFrom, from)
+	f.gotMessagesTo = append(f.gotMessagesTo, to)
+	f.gotMessagesDir = append(f.gotMessagesDir, dir)
+	f.gotMessagesLimit = append(f.gotMessagesLimit, limit)
 	if f.messagesErr != nil {
 		return nil, f.messagesErr
 	}
 	for _, p := range f.pages {
-		if p.from == from {
+		if p.from == from && p.to == to {
 			return &mautrix.RespMessages{Start: from, End: p.endTok, Chunk: p.chunk}, nil
 		}
 	}

@@ -68,6 +68,11 @@ type BotConfig struct {
 	// An empty DataDir disables persistence-dependent features (the
 	// scheduler will still run but won't survive a restart).
 	DataDir DataDir
+
+	// ObservedEventHandler, when non-nil, receives bot-visible message,
+	// edit, reaction, and redaction events. Handler failures are logged and
+	// do not block normal route dispatch.
+	ObservedEventHandler ObservedEventHandler
 }
 
 // Bot owns the Matrix client and a per-room route table. Behaviour-specific
@@ -107,6 +112,8 @@ type Bot struct {
 	// restarts won't be honoured.
 	dataDir DataDir
 
+	observedEventHandler ObservedEventHandler
+
 	// clock is the seam the scheduler reads for time and timers. Tests
 	// substitute a fakeClock via the same field. Defaults to realClock{}
 	// in NewBot.
@@ -141,21 +148,22 @@ func NewBot(cfg BotConfig) (*Bot, error) {
 
 	fetcher := newDecryptingFetcher(client)
 	return &Bot{
-		client:         client,
-		sender:         client,
-		fetcher:        fetcher,
-		history:        client,
-		decrypter:      fetcher,
-		joiner:         client,
-		botUserID:      cfg.UserID,
-		routesByRoom:   map[id.RoomID][]Route{},
-		autoJoinRooms:  autoJoin,
-		pickleKey:      cfg.PickleKey,
-		cryptoDB:       cfg.CryptoDB,
-		recoveryKey:    cfg.RecoveryKey,
-		operatorUserID: cfg.OperatorUserID,
-		dataDir:        cfg.DataDir,
-		clock:          realClock{},
+		client:               client,
+		sender:               client,
+		fetcher:              fetcher,
+		history:              client,
+		decrypter:            fetcher,
+		joiner:               client,
+		botUserID:            cfg.UserID,
+		routesByRoom:         map[id.RoomID][]Route{},
+		autoJoinRooms:        autoJoin,
+		pickleKey:            cfg.PickleKey,
+		cryptoDB:             cfg.CryptoDB,
+		recoveryKey:          cfg.RecoveryKey,
+		operatorUserID:       cfg.OperatorUserID,
+		dataDir:              cfg.DataDir,
+		observedEventHandler: cfg.ObservedEventHandler,
+		clock:                realClock{},
 	}, nil
 }
 
@@ -231,6 +239,11 @@ func (b *Bot) Run(ctx context.Context) error {
 		slog.Debug("matrixbot: rx", "type", evt.Type.Type, "class", evt.Type.Class, "room", evt.RoomID, "sender", evt.Sender, "id", evt.ID)
 	})
 	syncer.OnEventType(event.StateMember, b.handleInvite)
+	if b.observedEventHandler != nil {
+		syncer.OnEventType(event.EventMessage, b.observeEvent)
+		syncer.OnEventType(event.EventReaction, b.observeEvent)
+		syncer.OnEventType(event.EventRedaction, b.observeEvent)
+	}
 	switch {
 	case len(b.routesByRoom) == 0:
 		slog.Warn("matrixbot: no routes registered; the bot will sync but ignore every event")
