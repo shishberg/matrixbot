@@ -10,9 +10,11 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/rs/zerolog"
 	"maunium.net/go/mautrix"
+	"maunium.net/go/mautrix/crypto"
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
 )
@@ -219,6 +221,92 @@ func TestNewBotCryptoDisabledWhenPickleKeyEmpty(t *testing.T) {
 	}
 	if bot.pickleKey != "" {
 		t.Errorf("pickleKey = %q, want empty", bot.pickleKey)
+	}
+}
+
+type fakeRunCryptoHelper struct {
+	initCalled  bool
+	closeCalled bool
+	closeErr    error
+}
+
+func (f *fakeRunCryptoHelper) Encrypt(context.Context, id.RoomID, event.Type, any) (*event.EncryptedEventContent, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (f *fakeRunCryptoHelper) Decrypt(context.Context, *event.Event) (*event.Event, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (f *fakeRunCryptoHelper) WaitForSession(context.Context, id.RoomID, id.SenderKey, id.SessionID, time.Duration) bool {
+	return false
+}
+
+func (f *fakeRunCryptoHelper) RequestSession(context.Context, id.RoomID, id.SenderKey, id.SessionID, id.UserID, id.DeviceID) {
+}
+
+func (f *fakeRunCryptoHelper) Init(context.Context) error {
+	f.initCalled = true
+	return nil
+}
+
+func (f *fakeRunCryptoHelper) Close() error {
+	f.closeCalled = true
+	return f.closeErr
+}
+
+func (f *fakeRunCryptoHelper) Machine() *crypto.OlmMachine { return nil }
+
+func TestSetupCryptoInitialisesReusableCryptoAndClearsSecrets(t *testing.T) {
+	helper := &fakeRunCryptoHelper{}
+	var gotStore string
+	var gotPickle string
+	var gotRecovery string
+	prevNewHelper := newBotCryptoHelper
+	prevBootstrap := bootstrapBotOlmMachine
+	newBotCryptoHelper = func(client *mautrix.Client, pickleKey []byte, storePath string) (botCryptoHelper, error) {
+		gotPickle = string(pickleKey)
+		gotStore = storePath
+		return helper, nil
+	}
+	bootstrapBotOlmMachine = func(ctx context.Context, mach *crypto.OlmMachine, password, recoveryKey string) (string, error) {
+		gotRecovery = recoveryKey
+		return recoveryKey, nil
+	}
+	t.Cleanup(func() {
+		newBotCryptoHelper = prevNewHelper
+		bootstrapBotOlmMachine = prevBootstrap
+	})
+
+	client, err := mautrix.NewClient("https://matrix.example", "@bot:example", "tok")
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	bot := &Bot{
+		client:      client,
+		pickleKey:   "pickle-secret",
+		cryptoDB:    "/tmp/crypto.db",
+		recoveryKey: "recovery-secret",
+	}
+	cleanup, err := bot.SetupCrypto(context.Background())
+	if err != nil {
+		t.Fatalf("SetupCrypto: %v", err)
+	}
+	if !helper.initCalled {
+		t.Fatal("helper Init was not called")
+	}
+	if client.Crypto != helper {
+		t.Fatalf("client.Crypto = %T, want fake helper", client.Crypto)
+	}
+	if gotPickle != "pickle-secret" || gotStore != "/tmp/crypto.db" || gotRecovery != "recovery-secret" {
+		t.Fatalf("crypto inputs pickle=%q store=%q recovery=%q", gotPickle, gotStore, gotRecovery)
+	}
+	if bot.pickleKey != "" || bot.recoveryKey != "" {
+		t.Fatalf("secrets not cleared: pickle=%q recovery=%q", bot.pickleKey, bot.recoveryKey)
+	}
+	cleanup()
+	if !helper.closeCalled {
+		t.Fatal("cleanup did not close helper")
 	}
 }
 

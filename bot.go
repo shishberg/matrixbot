@@ -11,10 +11,25 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/shishberg/matrixbot/e2ee"
 	"maunium.net/go/mautrix"
+	"maunium.net/go/mautrix/crypto"
 	"maunium.net/go/mautrix/crypto/cryptohelper"
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/format"
 	"maunium.net/go/mautrix/id"
+)
+
+type botCryptoHelper interface {
+	mautrix.CryptoHelper
+	Init(context.Context) error
+	Close() error
+	Machine() *crypto.OlmMachine
+}
+
+var (
+	newBotCryptoHelper = func(client *mautrix.Client, pickleKey []byte, storePath string) (botCryptoHelper, error) {
+		return cryptohelper.NewCryptoHelper(client, pickleKey, storePath)
+	}
+	bootstrapBotOlmMachine = e2ee.Bootstrap
 )
 
 // matrixSender abstracts the slice of *mautrix.Client we send through, so
@@ -95,8 +110,9 @@ type Bot struct {
 
 	// pickleKey, when non-empty, opts the bot into Matrix E2EE. The crypto
 	// helper is initialised lazily in Run so that the ctx is available.
-	pickleKey string
-	cryptoDB  string
+	pickleKey     string
+	cryptoDB      string
+	cryptoMachine *crypto.OlmMachine
 
 	// recoveryKey is the base58 SSSS recovery key minted by `init`. On every
 	// restart Run uses it to import the existing cross-signing identity from
@@ -187,49 +203,14 @@ func (b *Bot) Run(ctx context.Context) error {
 		return fmt.Errorf("unexpected syncer type %T", b.client.Syncer)
 	}
 
-	// Setting client.Crypto makes the existing OnEventType hooks fire on
-	// decrypted m.room.message events and makes SendMessageEvent
-	// transparently encrypt for encrypted rooms. With no pickle key we skip
-	// this entirely; encrypted rooms simply won't deliver readable events.
-	if b.pickleKey == "" {
-		slog.Warn("matrixbot: running without E2EE (no pickle key); messages in encrypted rooms will be silently dropped")
-	} else {
-		helper, err := cryptohelper.NewCryptoHelper(b.client, []byte(b.pickleKey), b.cryptoDB)
-		if err != nil {
-			return fmt.Errorf("creating crypto helper: %w", err)
-		}
-		if err := helper.Init(ctx); err != nil {
-			return fmt.Errorf("initialising crypto helper: %w", err)
-		}
-		// mautrix's cryptohelper opens the SQLite store with the process
-		// umask, leaving crypto.db (plus the WAL/SHM sidecars) world-readable
-		// on a default Mac/Linux setup. The rest of matrixbot writes secrets
-		// at 0600 — clamp these to match. Failures are non-fatal: this is
-		// hardening, and the bot can still run without it.
-		if err := secureCryptoDBFiles(b.cryptoDB); err != nil {
-			slog.Warn("matrixbot: tightening crypto db permissions", "err", err, "store", b.cryptoDB)
-		}
-		b.client.Crypto = helper
-		b.clearPickleKey()
-		slog.Info("matrixbot: crypto enabled", "store", b.cryptoDB)
-		defer func() {
-			if cerr := helper.Close(); cerr != nil {
-				slog.Warn("matrixbot: closing crypto helper", "err", cerr)
-			}
-		}()
-
-		mach := helper.Machine()
-		// `init` already minted and persisted the cross-signing identity; on
-		// every restart we import it via the recovery key. Empty recoveryKey
-		// is allowed (the operator opted out) — it disables cross-signing
-		// without aborting the bot.
-		if _, err := e2ee.Bootstrap(ctx, mach, "", b.recoveryKey); err != nil {
-			return fmt.Errorf("cross-signing: %w", err)
-		}
-		b.clearRecoveryKey()
-
+	cleanupCrypto, err := b.SetupCrypto(ctx)
+	if err != nil {
+		return err
+	}
+	defer cleanupCrypto()
+	if b.client.Crypto != nil {
 		if verifier := e2ee.NewVerifier(b.client, b.operatorUserID); verifier != nil {
-			if err := verifier.Init(ctx, mach); err != nil {
+			if err := verifier.Init(ctx, b.cryptoMachine); err != nil {
 				return fmt.Errorf("verifier: %w", err)
 			}
 		}
@@ -259,6 +240,46 @@ func (b *Bot) Run(ctx context.Context) error {
 	// "no route matched" log spam.
 	go b.startScheduler(ctx)
 	return b.client.SyncWithContext(ctx)
+}
+
+// SetupCrypto enables the bot's reusable Matrix crypto helper without
+// starting the sync loop. Hosts that page historical events can call this
+// before ObservedEventsPage so encrypted room history uses the same decrypt
+// path as Run. The returned cleanup closes the helper and is always safe to
+// call.
+func (b *Bot) SetupCrypto(ctx context.Context) (func(), error) {
+	if b.pickleKey == "" {
+		slog.Warn("matrixbot: running without E2EE (no pickle key); messages in encrypted rooms will be silently dropped")
+		return func() {}, nil
+	}
+	helper, err := newBotCryptoHelper(b.client, []byte(b.pickleKey), b.cryptoDB)
+	if err != nil {
+		return nil, fmt.Errorf("creating crypto helper: %w", err)
+	}
+	if err := helper.Init(ctx); err != nil {
+		_ = helper.Close()
+		return nil, fmt.Errorf("initialising crypto helper: %w", err)
+	}
+	if err := secureCryptoDBFiles(b.cryptoDB); err != nil {
+		slog.Warn("matrixbot: tightening crypto db permissions", "err", err, "store", b.cryptoDB)
+	}
+	b.client.Crypto = helper
+	b.clearPickleKey()
+	slog.Info("matrixbot: crypto enabled", "store", b.cryptoDB)
+
+	mach := helper.Machine()
+	if _, err := bootstrapBotOlmMachine(ctx, mach, "", b.recoveryKey); err != nil {
+		_ = helper.Close()
+		return nil, fmt.Errorf("cross-signing: %w", err)
+	}
+	b.clearRecoveryKey()
+	b.cryptoMachine = mach
+
+	return func() {
+		if cerr := helper.Close(); cerr != nil {
+			slog.Warn("matrixbot: closing crypto helper", "err", cerr)
+		}
+	}, nil
 }
 
 // startScheduler launches the schedule loop if any registered route is
